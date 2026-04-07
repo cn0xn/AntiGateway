@@ -91,6 +91,24 @@
       "enabled": false,
       "domain_count": 0
     },
+    "svc_claude": {
+      "id": "svc_claude",
+      "name": "Claude / Anthropic",
+      "description": "Claude AI, Claude Code CLI, Anthropic API",
+      "url": "",
+      "domains": [
+        "anthropic.com",
+        "api.anthropic.com",
+        "claude.ai",
+        "login.anthropic.com",
+        "cdn.anthropic.com",
+        "statsig.anthropic.com"
+      ],
+      "category": "Services",
+      "mode": "tunnel",
+      "enabled": true,
+      "domain_count": 6
+    },
     "svc_google_ai": {
       "id": "svc_google_ai",
       "name": "Google AI / Gemini",

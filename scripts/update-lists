@@ -55,6 +55,14 @@ def needs_download(list_id):
     age = time.time() - os.path.getmtime(path)
     return age > CACHE_TTL
 
+def write_static(list_id, domains):
+    """Записывает inline-домены из конфига в кэш (не скачивает)."""
+    path = cache_path(list_id)
+    with open(path, "w") as f:
+        f.write("\n".join(domains) + "\n")
+    log(f"{list_id}: статический список ({len(domains)} доменов)")
+    return len(domains)
+
 def download(list_id, url):
     path = cache_path(list_id)
     log(f"Скачивание {list_id} ...")
@@ -250,8 +258,16 @@ def main():
             if not lst.get("enabled") or lst.get("mode") in ("disabled", "direct"):
                 continue
             list_id = lst["id"]
-            if needs_download(list_id):
-                count = download(list_id, lst["url"])
+            url = lst.get("url", "")
+            if not url:
+                # Статический список — домены хранятся прямо в конфиге
+                inline = lst.get("domains", [])
+                if inline:
+                    count = write_static(list_id, inline)
+                    lst["domain_count"] = count
+                    changed = True
+            elif needs_download(list_id):
+                count = download(list_id, url)
                 if count is not None:
                     lst["domain_count"] = count
                     changed = True

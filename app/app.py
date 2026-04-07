@@ -195,6 +195,7 @@ def api_status():
             "tiktok":   list_mode("svc_tiktok"),
             "telegram": list_mode("svc_telegram"),
             "meta":     list_mode("svc_meta"),
+            "claude":   list_mode("svc_claude"),
         },
         "nftables": nft_tables,
         "stats": {

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Pi Gateway</title>
+  <title>AntiGateway</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -12,7 +12,7 @@
   <nav class="navbar">
     <div class="nav-brand">
       <span class="nav-icon">⬡</span>
-      <span class="nav-title">Pi Gateway</span>
+      <span class="nav-title">AntiGateway</span>
     </div>
     <div class="nav-tabs">
       <button class="nav-tab active" onclick="switchTab('dashboard',this)">Дашборд</button>
@@ -122,6 +122,22 @@
               <button class="mode-btn" data-lid="svc_discord" data-mode="zapret"   onclick="setListMode('svc_discord','zapret')">Zapret</button>
               <button class="mode-btn" data-lid="svc_discord" data-mode="direct"   onclick="setListMode('svc_discord','direct')">Direct</button>
               <button class="mode-btn" data-lid="svc_discord" data-mode="disabled" onclick="setListMode('svc_discord','disabled')">Off</button>
+            </div>
+          </div>
+
+          <div class="routing-row">
+            <div class="routing-label">
+              <span class="routing-icon">◆</span>
+              <div>
+                <div class="routing-name">Claude / Anthropic</div>
+                <div class="routing-domains">claude.ai · api.anthropic.com</div>
+              </div>
+            </div>
+            <div class="routing-modes" id="rm-claude">
+              <button class="mode-btn" data-lid="svc_claude" data-mode="tunnel"   onclick="setListMode('svc_claude','tunnel')">Tunnel</button>
+              <button class="mode-btn" data-lid="svc_claude" data-mode="zapret"   onclick="setListMode('svc_claude','zapret')">Zapret</button>
+              <button class="mode-btn" data-lid="svc_claude" data-mode="direct"   onclick="setListMode('svc_claude','direct')">Direct</button>
+              <button class="mode-btn" data-lid="svc_claude" data-mode="disabled" onclick="setListMode('svc_claude','disabled')">Off</button>
             </div>
           </div>
 

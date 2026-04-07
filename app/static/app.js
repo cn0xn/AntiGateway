@@ -129,6 +129,7 @@ function renderStatus(d) {
 
   setModeButtons("svc_youtube", d.routing.youtube);
   setModeButtons("svc_discord", d.routing.discord);
+  setModeButtons("svc_claude",  d.routing.claude);
 
   document.getElementById("stat-blocked").textContent = fmtNum(d.stats.blocked_ips);
   document.getElementById("stat-zapret").textContent  = fmtNum(d.stats.zapret_ips);
@@ -378,6 +379,7 @@ function onModeChange(listId, mode) {
   savePending();
   if (listId === "svc_youtube") setModeButtons("svc_youtube", mode);
   if (listId === "svc_discord") setModeButtons("svc_discord", mode);
+  if (listId === "svc_claude")  setModeButtons("svc_claude",  mode);
 }
 
 function updateListRow(listId) {
