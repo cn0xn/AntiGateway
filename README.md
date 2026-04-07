@@ -13,13 +13,13 @@
 ## Установка
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/__REPO_OWNER__/antigateway/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/cn0xn/AntiGateway/main/install.sh | sudo bash
 ```
 
 Или клонировать и запустить вручную:
 
 ```bash
-git clone https://github.com/__REPO_OWNER__/antigateway
+git clone https://github.com/cn0xn/AntiGateway
 cd antigateway
 sudo bash install.sh
 ```

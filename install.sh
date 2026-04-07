@@ -6,7 +6,7 @@
 # ╚══════════════════════════════════════════════════════════════════════╝
 set -euo pipefail
 
-REPO_URL="https://github.com/__REPO_OWNER__/antigateway"
+REPO_URL="https://github.com/cn0xn/AntiGateway"
 INSTALL_DIR="/opt/antigateway"
 APP_DIR="/opt/antigateway/app"
 ZAP2_VER="v0.9.4.7"
