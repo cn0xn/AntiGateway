@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pi Gateway</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+  <!-- ── NAVBAR ── -->
+  <nav class="navbar">
+    <div class="nav-brand">
+      <span class="nav-icon">⬡</span>
+      <span class="nav-title">Pi Gateway</span>
+    </div>
+    <div class="nav-tabs">
+      <button class="nav-tab active" onclick="switchTab('dashboard',this)">Дашборд</button>
+      <button class="nav-tab"        onclick="switchTab('lists',this)">Списки доменов</button>
+      <button class="nav-tab"        onclick="switchTab('vpn',this)">VPN</button>
+    </div>
+    <div class="nav-right">
+      <span class="update-indicator" id="updateDot"></span>
+      <span class="nav-time" id="lastUpdated">—</span>
+    </div>
+  </nav>
+
+  <!-- TAB: DASHBOARD -->
+  <div id="tab-dashboard" class="tab-content active">
+  <main class="container">
+
+    <section class="section">
+      <h2 class="section-title">Сервисы</h2>
+      <div class="grid grid-3">
+
+        <div class="card" id="card-zapret2">
+          <div class="card-header">
+            <div class="card-icon zapret-icon">Z2</div>
+            <div>
+              <div class="card-title">zapret2</div>
+              <div class="card-sub">nfqws2 · DPI bypass</div>
+            </div>
+            <div class="status-badge" id="status-zapret2">—</div>
+          </div>
+          <div class="card-meta" id="meta-zapret2"></div>
+          <div class="card-actions">
+            <button class="btn btn-success btn-sm" onclick="serviceAction('zapret','start')">Start</button>
+            <button class="btn btn-danger btn-sm"  onclick="serviceAction('zapret','stop')">Stop</button>
+            <button class="btn btn-ghost btn-sm"   onclick="serviceAction('zapret','restart')">Restart</button>
+          </div>
+        </div>
+
+        <div class="card" id="card-awg">
+          <div class="card-header">
+            <div class="card-icon awg-icon">VPN</div>
+            <div>
+              <div class="card-title">AmneziaWG</div>
+              <div class="card-sub">обфусцированный туннель</div>
+            </div>
+            <div class="status-badge" id="status-awg">—</div>
+          </div>
+          <div class="card-meta" id="meta-awg"></div>
+          <div class="card-actions">
+            <button class="btn btn-success btn-sm" onclick="serviceAction('awg','start')">Start</button>
+            <button class="btn btn-danger btn-sm"  onclick="serviceAction('awg','stop')">Stop</button>
+            <button class="btn btn-ghost btn-sm"   onclick="serviceAction('awg','restart')">Restart</button>
+          </div>
+        </div>
+
+        <div class="card" id="card-dnsmasq">
+          <div class="card-header">
+            <div class="card-icon dns-icon">DNS</div>
+            <div>
+              <div class="card-title">dnsmasq</div>
+              <div class="card-sub">DNS resolver + nftset</div>
+            </div>
+            <div class="status-badge" id="status-dnsmasq">—</div>
+          </div>
+          <div class="card-meta" id="meta-dnsmasq"></div>
+          <div class="card-actions">
+            <button class="btn btn-success btn-sm" onclick="serviceAction('dnsmasq','start')">Start</button>
+            <button class="btn btn-danger btn-sm"  onclick="serviceAction('dnsmasq','stop')">Stop</button>
+            <button class="btn btn-ghost btn-sm"   onclick="serviceAction('dnsmasq','restart')">Restart</button>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <div class="grid grid-2">
+
+      <section class="section">
+        <h2 class="section-title">Быстрая маршрутизация</h2>
+        <div class="routing-grid">
+
+          <div class="routing-row">
+            <div class="routing-label">
+              <span class="routing-icon">▶</span>
+              <div>
+                <div class="routing-name">YouTube</div>
+                <div class="routing-domains">youtube.com · googlevideo.com</div>
+              </div>
+            </div>
+            <div class="routing-modes" id="rm-youtube">
+              <button class="mode-btn" data-lid="svc_youtube" data-mode="tunnel"   onclick="setListMode('svc_youtube','tunnel')">Tunnel</button>
+              <button class="mode-btn" data-lid="svc_youtube" data-mode="zapret"   onclick="setListMode('svc_youtube','zapret')">Zapret</button>
+              <button class="mode-btn" data-lid="svc_youtube" data-mode="direct"   onclick="setListMode('svc_youtube','direct')">Direct</button>
+              <button class="mode-btn" data-lid="svc_youtube" data-mode="disabled" onclick="setListMode('svc_youtube','disabled')">Off</button>
+            </div>
+          </div>
+
+          <div class="routing-row">
+            <div class="routing-label">
+              <span class="routing-icon">◈</span>
+              <div>
+                <div class="routing-name">Discord</div>
+                <div class="routing-domains">discord.com · discord.gg</div>
+              </div>
+            </div>
+            <div class="routing-modes" id="rm-discord">
+              <button class="mode-btn" data-lid="svc_discord" data-mode="tunnel"   onclick="setListMode('svc_discord','tunnel')">Tunnel</button>
+              <button class="mode-btn" data-lid="svc_discord" data-mode="zapret"   onclick="setListMode('svc_discord','zapret')">Zapret</button>
+              <button class="mode-btn" data-lid="svc_discord" data-mode="direct"   onclick="setListMode('svc_discord','direct')">Direct</button>
+              <button class="mode-btn" data-lid="svc_discord" data-mode="disabled" onclick="setListMode('svc_discord','disabled')">Off</button>
+            </div>
+          </div>
+
+          <div class="routing-hint">
+            Полное управление — во вкладке <a href="#" onclick="switchTab('lists',document.querySelector('.nav-tab:nth-child(2)'));return false">Списки доменов</a>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2 class="section-title">Статистика</h2>
+        <div class="stats-grid">
+          <div class="stat-card">
+            <div class="stat-value" id="stat-blocked">—</div>
+            <div class="stat-label">IP в blocked_ips</div>
+            <div class="stat-sub">tunnel (AWG)</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value" id="stat-zapret">—</div>
+            <div class="stat-label">IP в zapret_ips</div>
+            <div class="stat-sub">DPI bypass</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value" id="stat-rx">—</div>
+            <div class="stat-label">AWG RX</div>
+            <div class="stat-sub">принято</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value" id="stat-tx">—</div>
+            <div class="stat-label">AWG TX</div>
+            <div class="stat-sub">отправлено</div>
+          </div>
+        </div>
+      </section>
+
+    </div>
+
+    <!-- Diagnostics panel -->
+    <div class="diag-panel" id="diagPanel" style="display:none">
+      <div class="diag-header">
+        <span class="diag-title">Диагностика</span>
+        <span class="diag-ts" id="diagTs"></span>
+        <button class="btn btn-ghost btn-sm" onclick="runDiagnostics()">↻</button>
+        <button class="btn btn-ghost btn-sm diag-close" onclick="document.getElementById('diagPanel').style.display='none'">✕</button>
+      </div>
+      <div class="diag-checks" id="diagChecks"></div>
+    </div>
+
+    <!-- Logs -->
+    <section class="section">
+      <div class="logs-header">
+        <h2 class="section-title" style="margin:0">Логи</h2>
+        <div class="log-tabs">
+          <button class="log-tab active" onclick="switchLog('zapret2',this)">zapret2</button>
+          <button class="log-tab" onclick="switchLog('awg',this)">AWG</button>
+          <button class="log-tab" onclick="switchLog('dnsmasq',this)">dnsmasq</button>
+          <button class="log-tab" onclick="switchLog('system',this)">Система</button>
+        </div>
+        <button class="btn btn-ghost btn-sm" onclick="refreshLogs()">↻</button>
+        <button class="btn btn-ghost btn-sm" onclick="runDiagnostics()" title="Диагностика">⚙</button>
+      </div>
+      <div class="log-viewer" id="logViewer">
+        <div class="log-placeholder">Загрузка…</div>
+      </div>
+    </section>
+
+  </main>
+  </div>
+
+  <!-- TAB: LISTS -->
+  <div id="tab-lists" class="tab-content">
+  <main class="container">
+
+    <div class="lists-toolbar">
+      <div>
+        <h2 class="lists-title">Списки доменов</h2>
+        <p class="lists-subtitle">Источник: <a href="https://github.com/itdoginfo/allow-domains" target="_blank">itdoginfo/allow-domains</a></p>
+      </div>
+      <div class="lists-actions">
+        <span class="sync-status" id="syncStatus"></span>
+        <button class="btn btn-ghost btn-sm" onclick="syncLists(false)" id="btnSync">↻ Обновить кэш</button>
+        <button class="btn btn-primary btn-sm" onclick="syncLists(true)" id="btnForce">⬇ Скачать заново</button>
+        <button class="btn btn-success btn-sm" onclick="applyLists()" id="btnApply">✓ Применить</button>
+      </div>
+    </div>
+
+    <div class="sync-log-wrap" id="syncLogWrap" style="display:none">
+      <div class="sync-log" id="syncLog"></div>
+    </div>
+
+    <div class="mode-legend">
+      <span class="legend-item"><span class="mode-dot tunnel"></span>Tunnel — через AWG VPN</span>
+      <span class="legend-item"><span class="mode-dot zapret"></span>Zapret — DPI bypass</span>
+      <span class="legend-item"><span class="mode-dot direct"></span>Direct — без обхода</span>
+      <span class="legend-item"><span class="mode-dot disabled"></span>Off — отключён</span>
+    </div>
+
+    <div id="listsContainer">
+      <div class="lists-loading">Загрузка списков…</div>
+    </div>
+
+  </main>
+  </div>
+
+  <!-- TAB: VPN -->
+  <div id="tab-vpn" class="tab-content">
+  <main class="container">
+
+    <section class="section">
+      <h2 class="section-title">Конфигурация AmneziaWG</h2>
+      <p style="color:var(--text2);margin-bottom:16px">
+        Вставьте содержимое вашего <code>awg0.conf</code> (блоки <code>[Interface]</code> и <code>[Peer]</code>).
+        PostUp/PostDown и маршруты будут сгенерированы автоматически.
+      </p>
+
+      <div class="grid grid-2" style="margin-bottom:16px">
+        <div>
+          <label class="field-label">Сетевой интерфейс</label>
+          <input class="field-input" id="vpn-iface" type="text" placeholder="eth0" spellcheck="false">
+        </div>
+        <div>
+          <label class="field-label">IP шлюза (роутер)</label>
+          <input class="field-input" id="vpn-gw" type="text" placeholder="192.168.1.1" spellcheck="false">
+        </div>
+      </div>
+
+      <label class="field-label">Содержимое awg0.conf</label>
+      <textarea class="field-textarea" id="vpn-conf" rows="16"
+        placeholder="[Interface]&#10;PrivateKey = ...&#10;Address = 10.8.1.2/32&#10;&#10;[Peer]&#10;PublicKey = ...&#10;Endpoint = vpn.example.com:51820&#10;AllowedIPs = 0.0.0.0/0"
+        spellcheck="false"></textarea>
+
+      <div id="vpn-current-info" style="display:none;margin:12px 0;padding:10px 14px;background:var(--bg3);border-radius:var(--radius-sm);border:1px solid var(--border)">
+        <span style="color:var(--text2);font-size:12px">Текущий конфиг (PrivateKey скрыт):</span>
+        <pre id="vpn-current-conf" style="margin:6px 0 0;font-size:11px;color:var(--text2);overflow:auto;max-height:120px"></pre>
+      </div>
+
+      <div style="display:flex;gap:10px;margin-top:14px;align-items:center">
+        <button class="btn btn-primary" onclick="applyAwgConfig()" id="btnApplyVpn">
+          ⬆ Применить конфиг
+        </button>
+        <button class="btn btn-ghost btn-sm" onclick="loadVpnTab()">
+          ↻ Обновить
+        </button>
+        <span id="vpn-status" style="font-size:13px;color:var(--text2)"></span>
+      </div>
+    </section>
+
+  </main>
+  </div>
+
+
+  <!-- AUTH MODAL -->
+  <div class="modal-overlay" id="authModal" style="display:none">
+    <div class="modal-box">
+      <div class="modal-title">Требуется токен</div>
+      <p class="modal-desc">Введите токен из <code>/etc/gateway-ui/auth.conf</code></p>
+      <input class="field-input" id="authTokenInput" type="password"
+             placeholder="Токен..." spellcheck="false"
+             onkeydown="if(event.key==='Enter')submitToken()">
+      <div class="modal-error" id="authError" style="display:none">Неверный токен</div>
+      <button class="btn btn-primary" style="width:100%;margin-top:10px" onclick="submitToken()">Войти</button>
+    </div>
+  </div>
+
+  <div class="toast-container" id="toastContainer"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

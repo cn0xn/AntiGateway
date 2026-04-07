@@ -1,0 +1,28 @@
+# ── DNS-интерцепция + DoH блокировка ────────────────────────────────────────
+# doh_servers определён здесь (не cross-table ref — нет зависимости от load order)
+table ip dns_intercept {
+
+    set doh_servers {
+        type ipv4_addr
+        flags interval
+        elements = {
+            1.1.1.1, 1.0.0.1,
+            8.8.8.8, 8.8.4.4,
+            9.9.9.9, 9.9.9.10,
+            149.112.112.112,
+            94.140.14.14, 94.140.15.15,
+            185.228.168.9, 185.228.169.9
+        }
+    }
+
+    chain prerouting {
+        type nat hook prerouting priority dstnat; policy accept;
+        iifname "__IFACE__" udp dport 53 dnat to __PI_IP__:53
+        iifname "__IFACE__" tcp dport 53 dnat to __PI_IP__:53
+    }
+
+    chain forward_doh_block {
+        type filter hook forward priority filter; policy accept;
+        iifname "__IFACE__" ip daddr @doh_servers tcp dport 443 reject with tcp reset
+    }
+}

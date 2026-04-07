@@ -1,0 +1,7 @@
+# ── IPv6 leak prevention ─────────────────────────────────────────────────────
+table ip6 ipv6_leak_block {
+    chain forward_block {
+        type filter hook forward priority filter; policy accept;
+        iifname "__IFACE__" drop
+    }
+}

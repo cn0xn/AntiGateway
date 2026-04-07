@@ -1,0 +1,7 @@
+# ── Kill-switch ──────────────────────────────────────────────────────────────
+table ip killswitch {
+    chain forward_killswitch {
+        type filter hook forward priority filter + 10; policy accept;
+        meta mark 0x00000001 oifname "eth0" drop
+    }
+}

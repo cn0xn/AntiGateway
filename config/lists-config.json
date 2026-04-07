@@ -1,0 +1,185 @@
+{
+  "last_sync": "2026-04-07T11:13:04",
+  "lists": {
+    "russia_inside": {
+      "id": "russia_inside",
+      "name": "Россия — заблокировано внутри",
+      "description": "Сайты заблокированные в России (Роскомнадзор и др.)",
+      "url": "https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-raw.lst",
+      "category": "Russia",
+      "mode": "tunnel",
+      "enabled": true,
+      "domain_count": 1125
+    },
+    "russia_outside": {
+      "id": "russia_outside",
+      "name": "Россия — заблокировано снаружи",
+      "description": "Сайты недоступные из-за санкций и геоблока для РФ",
+      "url": "https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/outside-raw.lst",
+      "category": "Russia",
+      "mode": "disabled",
+      "enabled": true,
+      "domain_count": 0
+    },
+    "svc_youtube": {
+      "id": "svc_youtube",
+      "name": "YouTube",
+      "description": "YouTube и Google Video CDN",
+      "url": "https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Services/youtube.lst",
+      "category": "Services",
+      "mode": "tunnel",
+      "enabled": true,
+      "domain_count": 18
+    },
+    "svc_discord": {
+      "id": "svc_discord",
+      "name": "Discord",
+      "description": "Discord голос, чат и CDN",
+      "url": "https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Services/discord.lst",
+      "category": "Services",
+      "mode": "tunnel",
+      "enabled": true,
+      "domain_count": 20
+    },
+    "svc_telegram": {
+      "id": "svc_telegram",
+      "name": "Telegram",
+      "description": "Telegram мессенджер",
+      "url": "https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Services/telegram.lst",
+      "category": "Services",
+      "mode": "tunnel",
+      "enabled": true,
+      "domain_count": 20
+    },
+    "svc_twitter": {
+      "id": "svc_twitter",
+      "name": "Twitter / X",
+      "description": "Twitter (X) социальная сеть",
+      "url": "https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Services/twitter.lst",
+      "category": "Services",
+      "mode": "disabled",
+      "enabled": true,
+      "domain_count": 23
+    },
+    "svc_meta": {
+      "id": "svc_meta",
+      "name": "Meta (Instagram/Facebook)",
+      "description": "Instagram, Facebook, WhatsApp",
+      "url": "https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Services/meta.lst",
+      "category": "Services",
+      "mode": "tunnel",
+      "enabled": true,
+      "domain_count": 17
+    },
+    "svc_tiktok": {
+      "id": "svc_tiktok",
+      "name": "TikTok",
+      "description": "TikTok видео платформа",
+      "url": "https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Services/tiktok.lst",
+      "category": "Services",
+      "mode": "tunnel",
+      "enabled": true,
+      "domain_count": 16
+    },
+    "svc_cloudflare": {
+      "id": "svc_cloudflare",
+      "name": "Cloudflare",
+      "description": "Cloudflare CDN и сервисы",
+      "url": "https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Services/cloudflare.lst",
+      "category": "Services",
+      "mode": "disabled",
+      "enabled": false,
+      "domain_count": 0
+    },
+    "svc_google_ai": {
+      "id": "svc_google_ai",
+      "name": "Google AI / Gemini",
+      "description": "Google AI Studio, Gemini",
+      "url": "https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Services/google_ai.lst",
+      "category": "Services",
+      "mode": "tunnel",
+      "enabled": false,
+      "domain_count": 0
+    },
+    "svc_google_play": {
+      "id": "svc_google_play",
+      "name": "Google Play",
+      "description": "Google Play Store",
+      "url": "https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Services/google_play.lst",
+      "category": "Services",
+      "mode": "disabled",
+      "enabled": false,
+      "domain_count": 0
+    },
+    "svc_google_meet": {
+      "id": "svc_google_meet",
+      "name": "Google Meet",
+      "description": "Google Meet видеоконференции",
+      "url": "https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Services/google_meet.lst",
+      "category": "Services",
+      "mode": "disabled",
+      "enabled": false,
+      "domain_count": 0
+    },
+    "svc_hdrezka": {
+      "id": "svc_hdrezka",
+      "name": "HDRezka",
+      "description": "HDRezka онлайн-кинотеатр",
+      "url": "https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Services/hdrezka.lst",
+      "category": "Services",
+      "mode": "disabled",
+      "enabled": false,
+      "domain_count": 17
+    },
+    "svc_roblox": {
+      "id": "svc_roblox",
+      "name": "Roblox",
+      "description": "Roblox игровая платформа",
+      "url": "https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Services/roblox.lst",
+      "category": "Services",
+      "mode": "disabled",
+      "enabled": false,
+      "domain_count": 0
+    },
+    "cat_geoblock": {
+      "id": "cat_geoblock",
+      "name": "Геоблок",
+      "description": "Сервисы недоступные по геолокации",
+      "url": "https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Categories/geoblock.lst",
+      "category": "Categories",
+      "mode": "tunnel",
+      "enabled": false,
+      "domain_count": 0
+    },
+    "cat_news": {
+      "id": "cat_news",
+      "name": "Новости",
+      "description": "Заблокированные новостные сайты",
+      "url": "https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Categories/news.lst",
+      "category": "Categories",
+      "mode": "tunnel",
+      "enabled": false,
+      "domain_count": 0
+    },
+    "cat_anime": {
+      "id": "cat_anime",
+      "name": "Аниме",
+      "description": "Аниме сайты",
+      "url": "https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Categories/anime.lst",
+      "category": "Categories",
+      "mode": "disabled",
+      "enabled": false,
+      "domain_count": 0
+    },
+    "cat_hodca": {
+      "id": "cat_hodca",
+      "name": "ХОДЦА",
+      "description": "Хостинги и CDN (Cloudflare, Akamai и др.)",
+      "url": "https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Categories/hodca.lst",
+      "category": "Categories",
+      "mode": "disabled",
+      "enabled": false,
+      "domain_count": 0
+    }
+  }
+}

@@ -1,0 +1,17 @@
+# Конфиги с секретами — не коммитить
+auth.conf
+*.conf.local
+awg0.conf
+
+# Кэш
+__pycache__/
+*.pyc
+*.pyo
+.cache/
+
+# Логи
+*.log
+
+# Временные файлы
+*.tmp
+*.nft.tmp

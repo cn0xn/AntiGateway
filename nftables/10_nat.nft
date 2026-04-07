@@ -1,0 +1,8 @@
+# ── NAT: заменяет iptables MASQUERADE из AWG PostUp ─────────────────────────
+table ip gateway_nat {
+    chain postrouting {
+        type nat hook postrouting priority srcnat; policy accept;
+        oifname "awg0" masquerade
+        oifname "__IFACE__" masquerade
+    }
+}

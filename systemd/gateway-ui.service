@@ -1,0 +1,15 @@
+[Unit]
+Description=Pi Gateway Web UI
+After=network.target
+
+[Service]
+Type=simple
+User=user
+WorkingDirectory=/opt/gateway-ui
+ExecStart=/usr/bin/python3 /opt/gateway-ui/app.py
+Restart=on-failure
+RestartSec=5
+Environment=FLASK_ENV=production
+
+[Install]
+WantedBy=multi-user.target
