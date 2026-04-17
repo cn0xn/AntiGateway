@@ -412,14 +412,6 @@ def api_reset_apply():
                  ["sudo", "-n", "/usr/bin/systemctl", "start", "zapret2-nfqws2"],
                  ignore_fail=True)
 
-            # Web UI — поддерживаем оба имени сервиса
-            out, _, rc = run_cmd(["sudo", "-n", "/usr/bin/systemctl",
-                                   "cat", "antigateway-ui"])
-            ui_unit = "antigateway-ui" if rc == 0 else "gateway-ui"
-            step(f"Перезапуск Web UI ({ui_unit})",
-                 ["sudo", "-n", "/usr/bin/systemctl", "restart", ui_unit],
-                 ignore_fail=True)
-
             # ── Health check ──────────────────────────────────────────────
             log("── Проверка ──")
             time.sleep(2)
