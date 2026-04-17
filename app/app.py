@@ -26,6 +26,8 @@ AWG_CONF_PATH    = "/etc/amnezia/amneziawg/awg0.conf"
 UPDATE_LISTS_BIN = "/usr/local/bin/update-lists"
 NFTABLES_CONF    = "/etc/nftables.conf"
 AUTH_CONF        = "/etc/gateway-ui/auth.conf"
+DNS_RECORDS_FILE = "/etc/antigateway/dns-records.json"
+DNS_CUSTOM_HOSTS = "/etc/antigateway/custom-hosts"
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -443,6 +445,120 @@ def api_reset_apply():
 def api_reset_apply_status():
     with _reset_lock:
         return jsonify(dict(_reset_state))
+
+
+# ── API: DNS records ──────────────────────────────────────────────────────
+
+def validate_hostname(name):
+    """Простая валидация hostname / домена."""
+    return bool(re.match(r'^[a-zA-Z0-9]([a-zA-Z0-9\-\.]{0,61}[a-zA-Z0-9])?$', name))
+
+def load_dns_records():
+    try:
+        with open(DNS_RECORDS_FILE) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return []
+    except Exception:
+        return []
+
+def save_dns_records(records):
+    proc = subprocess.run(
+        ["sudo", "-n", "/usr/bin/tee", DNS_RECORDS_FILE],
+        input=json.dumps(records, indent=2, ensure_ascii=False),
+        text=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=5
+    )
+    return proc.returncode == 0
+
+def write_dnsmasq_custom(records):
+    """Записывает /etc/antigateway/custom-hosts и перезагружает dnsmasq (SIGHUP)."""
+    lines = ["# AntiGateway custom hosts — auto-generated, edit via web UI"]
+    for r in records:
+        comment = f"  # {r['comment']}" if r.get("comment") else ""
+        lines.append(f"{r['ip']}\t{r['name']}{comment}")
+    content = "\n".join(lines) + "\n"
+    proc = subprocess.run(
+        ["sudo", "-n", "/usr/bin/tee", DNS_CUSTOM_HOSTS],
+        input=content, text=True,
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=5
+    )
+    if proc.returncode != 0:
+        return False, proc.stderr
+    _, err, rc = run_cmd(
+        ["sudo", "-n", "/usr/bin/systemctl", "reload", "dnsmasq"], timeout=8
+    )
+    return rc == 0, err
+
+@app.route("/api/dns")
+def api_dns_list():
+    return jsonify({"records": load_dns_records()})
+
+@app.route("/api/dns", methods=["POST"])
+@require_auth
+def api_dns_add():
+    data    = request.json or {}
+    name    = data.get("name", "").strip().lower()
+    ip      = data.get("ip", "").strip()
+    comment = data.get("comment", "").strip()[:80]
+
+    if not name or not ip:
+        return jsonify({"ok": False, "error": "name и ip обязательны"}), 400
+    if not validate_hostname(name):
+        return jsonify({"ok": False, "error": "Недопустимое имя хоста"}), 400
+    if not validate_ip(ip):
+        return jsonify({"ok": False, "error": "Недопустимый IPv4 адрес"}), 400
+
+    records = load_dns_records()
+    if any(r["name"] == name for r in records):
+        return jsonify({"ok": False, "error": f"Запись '{name}' уже существует"}), 409
+
+    records.append({"name": name, "ip": ip, "comment": comment})
+    if not save_dns_records(records):
+        return jsonify({"ok": False, "error": "Не удалось сохранить"}), 500
+
+    ok, err = write_dnsmasq_custom(records)
+    return jsonify({"ok": ok, "error": err if not ok else None, "records": records})
+
+@app.route("/api/dns/<name>", methods=["DELETE"])
+@require_auth
+def api_dns_delete(name):
+    name = name.strip().lower()
+    records = load_dns_records()
+    new_records = [r for r in records if r["name"] != name]
+    if len(new_records) == len(records):
+        return jsonify({"ok": False, "error": "Запись не найдена"}), 404
+
+    if not save_dns_records(new_records):
+        return jsonify({"ok": False, "error": "Не удалось сохранить"}), 500
+
+    ok, err = write_dnsmasq_custom(new_records)
+    return jsonify({"ok": ok, "error": err if not ok else None, "records": new_records})
+
+@app.route("/api/dns/<name>", methods=["PUT"])
+@require_auth
+def api_dns_update(name):
+    name = name.strip().lower()
+    data = request.json or {}
+    ip      = data.get("ip", "").strip()
+    comment = data.get("comment", "").strip()[:80]
+
+    if not validate_ip(ip):
+        return jsonify({"ok": False, "error": "Недопустимый IPv4 адрес"}), 400
+
+    records = load_dns_records()
+    for r in records:
+        if r["name"] == name:
+            r["ip"] = ip
+            r["comment"] = comment
+            break
+    else:
+        return jsonify({"ok": False, "error": "Запись не найдена"}), 404
+
+    if not save_dns_records(records):
+        return jsonify({"ok": False, "error": "Не удалось сохранить"}), 500
+
+    ok, err = write_dnsmasq_custom(records)
+    return jsonify({"ok": ok, "error": err if not ok else None, "records": records})
 
 
 # ── API: logs ─────────────────────────────────────────────────────────────────

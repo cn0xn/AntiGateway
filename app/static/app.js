@@ -86,6 +86,7 @@ function switchTab(name, btn) {
   if (btn) btn.classList.add("active");
 
   if (name === "lists" && !listsData) loadListsTab();
+  if (name === "dns")                 loadDnsTab();
   if (name === "vpn")                 loadVpnTab();
 }
 
@@ -544,6 +545,129 @@ function escHtml(s) {
 
 function fmtNum(n) {
   return (n != null) ? n.toLocaleString("ru") : "—";
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   DNS TAB
+   ═══════════════════════════════════════════════════════════════ */
+
+async function loadDnsTab() {
+  const wrap = document.getElementById("dnsTableWrap");
+  wrap.innerHTML = '<div class="dns-loading">Загрузка…</div>';
+  try {
+    const res  = await fetch("/api/dns");
+    const data = await res.json();
+    renderDnsTable(data.records || []);
+  } catch (e) {
+    wrap.innerHTML = `<div class="dns-loading" style="color:var(--red)">Ошибка: ${escHtml(e.message)}</div>`;
+  }
+}
+
+function renderDnsTable(records) {
+  const wrap = document.getElementById("dnsTableWrap");
+  if (!records.length) {
+    wrap.innerHTML = '<div class="dns-loading">Нет записей — добавьте первую</div>';
+    return;
+  }
+  wrap.innerHTML = `
+    <table class="dns-table">
+      <thead>
+        <tr>
+          <th>Hostname</th>
+          <th>IP адрес</th>
+          <th>Описание</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        ${records.map(r => `
+          <tr id="dns-row-${escHtml(r.name)}">
+            <td class="dns-name"><code>${escHtml(r.name)}</code></td>
+            <td class="dns-ip" id="dns-ip-${escHtml(r.name)}">${escHtml(r.ip)}</td>
+            <td class="dns-comment">${escHtml(r.comment || "")}</td>
+            <td class="dns-actions">
+              <button class="btn btn-ghost btn-sm" onclick="dnsEdit('${escHtml(r.name)}','${escHtml(r.ip)}','${escHtml(r.comment||"")}')">✎</button>
+              <button class="btn btn-danger btn-sm"  onclick="dnsDelete('${escHtml(r.name)}')">✕</button>
+            </td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+async function dnsAdd() {
+  const name    = document.getElementById("dns-name").value.trim().toLowerCase();
+  const ip      = document.getElementById("dns-ip").value.trim();
+  const comment = document.getElementById("dns-comment").value.trim();
+  const errEl   = document.getElementById("dnsFormError");
+
+  errEl.textContent = "";
+  if (!name || !ip) { errEl.textContent = "Укажите hostname и IP"; return; }
+
+  try {
+    const res  = await apiFetch("/api/dns", {
+      method:  "POST",
+      headers: {"Content-Type": "application/json"},
+      body:    JSON.stringify({name, ip, comment}),
+    });
+    const data = await res.json();
+    if (!data.ok) { errEl.textContent = data.error || "Ошибка"; return; }
+
+    document.getElementById("dns-name").value    = "";
+    document.getElementById("dns-ip").value      = "";
+    document.getElementById("dns-comment").value = "";
+    renderDnsTable(data.records);
+    showToast(`${name} → ${ip} добавлен ✓`, "success");
+  } catch (e) {
+    if (e.message !== "Unauthorized") errEl.textContent = e.message;
+  }
+}
+
+async function dnsDelete(name) {
+  if (!confirm(`Удалить запись «${name}»?`)) return;
+  try {
+    const res  = await apiFetch(`/api/dns/${encodeURIComponent(name)}`, {method: "DELETE"});
+    const data = await res.json();
+    if (!data.ok) { showToast("Ошибка: " + data.error, "error"); return; }
+    renderDnsTable(data.records);
+    showToast(`${name} удалён`, "success");
+  } catch (e) {
+    if (e.message !== "Unauthorized") showToast("Ошибка: " + e.message, "error");
+  }
+}
+
+function dnsEdit(name, ip, comment) {
+  const row = document.getElementById(`dns-row-${name}`);
+  if (!row) return;
+
+  // Инлайн редактирование — заменяем ячейки на inputs
+  row.querySelector(".dns-ip").innerHTML =
+    `<input class="field-input" id="edit-ip-${name}" value="${escHtml(ip)}" style="width:140px;padding:3px 6px;font-size:13px">`;
+  row.querySelector(".dns-comment").innerHTML =
+    `<input class="field-input" id="edit-comment-${name}" value="${escHtml(comment)}" style="width:180px;padding:3px 6px;font-size:13px">`;
+  row.querySelector(".dns-actions").innerHTML = `
+    <button class="btn btn-success btn-sm" onclick="dnsSave('${name}')">✓</button>
+    <button class="btn btn-ghost btn-sm"   onclick="loadDnsTab()">✕</button>
+  `;
+}
+
+async function dnsSave(name) {
+  const ip      = document.getElementById(`edit-ip-${name}`)?.value.trim() || "";
+  const comment = document.getElementById(`edit-comment-${name}`)?.value.trim() || "";
+  try {
+    const res  = await apiFetch(`/api/dns/${encodeURIComponent(name)}`, {
+      method:  "PUT",
+      headers: {"Content-Type": "application/json"},
+      body:    JSON.stringify({ip, comment}),
+    });
+    const data = await res.json();
+    if (!data.ok) { showToast("Ошибка: " + data.error, "error"); return; }
+    renderDnsTable(data.records);
+    showToast(`${name} обновлён ✓`, "success");
+  } catch (e) {
+    if (e.message !== "Unauthorized") showToast("Ошибка: " + e.message, "error");
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════════

@@ -395,3 +395,26 @@ body {
 .modal-desc  { font-size: 13px; color: var(--text2); margin-bottom: 16px; line-height: 1.5; }
 .modal-desc code { background: var(--bg3); padding: 1px 5px; border-radius: 4px; font-size: 11px; }
 .modal-error { color: var(--red); font-size: 12px; margin-top: 6px; }
+
+/* ── DNS Tab ──────────────────────────────────────────────────────────── */
+.dns-form {
+  display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px;
+}
+.dns-form .field-input { flex: 1; min-width: 130px; }
+.dns-form .btn { flex-shrink: 0; }
+.dns-loading { color: var(--text2); font-size: 13px; padding: 16px 0; }
+.dns-table {
+  width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 4px;
+}
+.dns-table th {
+  text-align: left; padding: 7px 12px;
+  color: var(--text2); font-weight: 500; font-size: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.dns-table td { padding: 9px 12px; border-bottom: 1px solid var(--border2); vertical-align: middle; }
+.dns-table tr:last-child td { border-bottom: none; }
+.dns-table tr:hover td { background: var(--bg3); }
+.dns-name code { font-family: var(--mono); color: var(--accent); font-size: 13px; }
+.dns-ip   { color: var(--text); font-family: var(--mono); font-size: 13px; }
+.dns-comment { color: var(--text2); font-size: 12px; }
+.dns-actions { text-align: right; white-space: nowrap; width: 80px; }

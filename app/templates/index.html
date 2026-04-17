@@ -17,6 +17,7 @@
     <div class="nav-tabs">
       <button class="nav-tab active" onclick="switchTab('dashboard',this)">Дашборд</button>
       <button class="nav-tab"        onclick="switchTab('lists',this)">Списки доменов</button>
+      <button class="nav-tab"        onclick="switchTab('dns',this)">DNS</button>
       <button class="nav-tab"        onclick="switchTab('vpn',this)">VPN</button>
     </div>
     <div class="nav-right">
@@ -254,6 +255,38 @@
     <div id="listsContainer">
       <div class="lists-loading">Загрузка списков…</div>
     </div>
+
+  </main>
+  </div>
+
+  <!-- TAB: DNS -->
+  <div id="tab-dns" class="tab-content">
+  <main class="container">
+
+    <section class="section">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap">
+        <div>
+          <h2 class="section-title" style="margin:0">Локальные DNS записи</h2>
+          <p style="color:var(--text2);font-size:13px;margin:4px 0 0">
+            Записи типа A для локальных хостов — пишутся в <code>/etc/dnsmasq.d/50_custom_dns.conf</code>
+          </p>
+        </div>
+      </div>
+
+      <!-- Форма добавления -->
+      <div class="dns-form" id="dnsForm">
+        <input class="field-input" id="dns-name"    type="text" placeholder="hostname (напр. pi3)"     spellcheck="false" autocomplete="off">
+        <input class="field-input" id="dns-ip"      type="text" placeholder="IP (напр. 192.168.1.5)"   spellcheck="false" autocomplete="off">
+        <input class="field-input" id="dns-comment" type="text" placeholder="Описание (необязательно)" spellcheck="false" autocomplete="off">
+        <button class="btn btn-primary" onclick="dnsAdd()">+ Добавить</button>
+      </div>
+      <div id="dnsFormError" style="color:var(--red);font-size:13px;min-height:18px;margin-top:4px"></div>
+
+      <!-- Таблица записей -->
+      <div id="dnsTableWrap" style="margin-top:16px">
+        <div class="dns-loading">Загрузка…</div>
+      </div>
+    </section>
 
   </main>
   </div>
