@@ -547,6 +547,98 @@ function fmtNum(n) {
 }
 
 /* ═══════════════════════════════════════════════════════════════
+   RESET & REAPPLY
+   ═══════════════════════════════════════════════════════════════ */
+
+let resetPollTimer = null;
+
+function confirmReset() {
+  if (!confirm(
+    "Полный сброс и переприменение конфигурации:\n\n" +
+    "• Остановка zapret2\n" +
+    "• Отключение AWG туннеля\n" +
+    "• Сброс nftables и правил маршрутизации\n" +
+    "• Применение конфигурации заново\n" +
+    "• Запуск всех сервисов\n\n" +
+    "Интернет у клиентов будет недоступен ~5–10 секунд.\n\n" +
+    "Продолжить?"
+  )) return;
+  startReset();
+}
+
+async function startReset() {
+  const btn = document.getElementById("btnReset");
+  const wrap = document.getElementById("resetLogWrap");
+  const log  = document.getElementById("resetLog");
+
+  btn.disabled = true;
+  wrap.style.display = "block";
+  log.innerHTML = "";
+
+  try {
+    const res = await apiFetch("/api/reset-apply", {
+      method:  "POST",
+      headers: {"Content-Type": "application/json"},
+      body:    "{}",
+    });
+    const data = await res.json();
+    if (!data.ok) {
+      appendResetLine("✗ " + (data.error || "Ошибка запуска"), "err");
+      btn.disabled = false;
+      return;
+    }
+    pollResetStatus();
+  } catch (e) {
+    if (e.message !== "Unauthorized") {
+      appendResetLine("✗ Сетевая ошибка: " + e.message, "err");
+      btn.disabled = false;
+    }
+  }
+}
+
+function pollResetStatus() {
+  clearInterval(resetPollTimer);
+  let lastLen = 0;
+  resetPollTimer = setInterval(async () => {
+    try {
+      const res  = await fetch("/api/reset-apply/status");
+      const data = await res.json();
+
+      for (let i = lastLen; i < (data.log || []).length; i++) {
+        const line = data.log[i];
+        let cls = "";
+        if (line.startsWith("✗")) cls = "err";
+        else if (line.startsWith("✓") || line.includes("✓")) cls = "ok";
+        else if (line.startsWith("──")) cls = "warn";
+        appendResetLine(line, cls);
+      }
+      lastLen = (data.log || []).length;
+
+      if (!data.running) {
+        clearInterval(resetPollTimer);
+        document.getElementById("btnReset").disabled = false;
+        if (data.success) {
+          showToast("Сброс и переприменение завершены ✓", "success");
+          setTimeout(refreshStatus, 1000);
+          setTimeout(runDiagnostics, 1500);
+        } else {
+          showToast("Ошибка: " + (data.error || "см. лог"), "error");
+        }
+      }
+    } catch { /* ignore network hiccup during reset */ }
+  }, 600);
+}
+
+function appendResetLine(text, cls) {
+  const log  = document.getElementById("resetLog");
+  const line = document.createElement("div");
+  line.textContent = text;
+  if (cls) line.className = cls;
+  log.appendChild(line);
+  log.scrollTop = log.scrollHeight;
+}
+
+/* ═══════════════════════════════════════════════════════════════
    VPN TAB
    ═══════════════════════════════════════════════════════════════ */
 

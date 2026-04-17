@@ -1,20 +1,24 @@
 PI_HOST ?= user@192.168.1.5
 REPO    := github.com/cn0xn/AntiGateway
 
-.PHONY: push deploy push-deploy logs status
+.PHONY: push deploy push-deploy logs status ssh
 
 ## Запушить изменения на GitHub
 push:
 	git push
 
-## Задеплоить на Pi (без push)
+## Задеплоить на Pi через rsync (без push)
 deploy:
-	ssh $(PI_HOST) 'cd /opt/antigateway && sudo bash deploy.sh'
+	rsync -az --exclude='.git' --exclude='SESSION.md' \
+	    ./ $(PI_HOST):/opt/antigateway/
+	ssh $(PI_HOST) 'sudo bash /opt/antigateway/deploy.sh'
 
-## Push + deploy одной командой
+## Push на GitHub + деплой на Pi одной командой
 push-deploy:
 	git push
-	ssh $(PI_HOST) 'cd /opt/antigateway && sudo bash deploy.sh'
+	rsync -az --exclude='.git' --exclude='SESSION.md' \
+	    ./ $(PI_HOST):/opt/antigateway/
+	ssh $(PI_HOST) 'sudo bash /opt/antigateway/deploy.sh'
 
 ## Посмотреть логи web UI на Pi
 logs:

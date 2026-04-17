@@ -87,6 +87,22 @@
       </div>
     </section>
 
+    <!-- Reset & Reapply -->
+    <section class="section">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
+        <div>
+          <h2 class="section-title" style="margin:0">Система</h2>
+          <p style="color:var(--text2);font-size:13px;margin:4px 0 0">Полный сброс правил и переприменение конфигурации</p>
+        </div>
+        <button class="btn btn-danger" id="btnReset" onclick="confirmReset()">
+          ↺ Сбросить и переприменить
+        </button>
+      </div>
+      <div class="sync-log-wrap" id="resetLogWrap" style="display:none;margin-top:12px">
+        <div class="sync-log" id="resetLog"></div>
+      </div>
+    </section>
+
     <div class="grid grid-2">
 
       <section class="section">

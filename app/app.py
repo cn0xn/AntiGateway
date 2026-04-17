@@ -259,8 +259,11 @@ def api_lists_save():
     return jsonify({"ok": True})
 
 
-_sync_state = {"running": False, "log": [], "done": False, "error": None}
-_sync_lock  = threading.Lock()
+_sync_state  = {"running": False, "log": [], "done": False, "error": None}
+_sync_lock   = threading.Lock()
+
+_reset_state = {"running": False, "log": [], "done": False, "error": None, "success": False}
+_reset_lock  = threading.Lock()
 
 @app.route("/api/lists/sync", methods=["POST"])
 @require_auth
@@ -303,6 +306,143 @@ def api_lists_sync():
 def api_lists_sync_status():
     with _sync_lock:
         return jsonify(dict(_sync_state))
+
+
+# ── API: reset and reapply ────────────────────────────────────────────────
+
+NETWORK_CONF_PATH = "/etc/antigateway/network.conf"
+AWG_CONF_PATH_SYS = "/etc/amnezia/amneziawg/awg0.conf"
+NFTABLES_DIR_SRC  = "/opt/antigateway/nftables"
+NFTABLES_DIR_DST  = "/etc/nftables.d"
+
+@app.route("/api/reset-apply", methods=["POST"])
+@require_auth
+def api_reset_apply():
+    with _reset_lock:
+        if _reset_state["running"]:
+            return jsonify({"ok": False, "error": "уже выполняется"})
+        _reset_state.update({"running": True, "log": [], "done": False,
+                              "error": None, "success": False})
+
+    def run_reset():
+        import time
+
+        def log(msg):
+            with _reset_lock:
+                _reset_state["log"].append(msg)
+
+        def step(label, args, timeout=15, ignore_fail=False):
+            log(f"⟳ {label}")
+            out, err, rc = run_cmd(args, timeout=timeout)
+            if rc == 0:
+                log(f"  ✓ готово")
+            elif ignore_fail:
+                log(f"  · пропущено ({err[:60]})" if err else "  · нет")
+            else:
+                log(f"  ✗ ошибка: {err[:80]}")
+                raise RuntimeError(f"{label}: {err}")
+
+        try:
+            # ── Чистим ────────────────────────────────────────────────────
+            log("── Сброс текущего состояния ──")
+            step("Остановка zapret2",
+                 ["sudo", "-n", "/usr/bin/systemctl", "stop", "zapret2-nfqws2"],
+                 ignore_fail=True)
+            step("Отключение AWG туннеля",
+                 ["sudo", "-n", "/usr/bin/awg-quick", "down", AWG_CONF_PATH_SYS],
+                 ignore_fail=True)
+            step("Сброс nftables",
+                 ["sudo", "-n", "/usr/sbin/nft", "flush", "ruleset"],
+                 ignore_fail=True)
+            # routing rules — игнорируем ошибки (правил может не быть)
+            run_cmd(["ip", "rule", "del", "fwmark", "0x1", "table", "100",
+                     "priority", "100"])
+            run_cmd(["ip", "route", "flush", "table", "100"])
+            log("  ✓ правила маршрутизации сброшены")
+
+            # ── Применяем новые конфиги ───────────────────────────────────
+            log("── Применение конфигурации ──")
+
+            # Читаем network.conf для подстановки плейсхолдеров
+            try:
+                with open(NETWORK_CONF_PATH) as f:
+                    nc = json.load(f)
+                iface = nc["iface"]
+                pi_ip = nc.get("pi_ip", "")
+            except Exception as e:
+                raise RuntimeError(f"Не найден network.conf: {e}")
+
+            # Подставляем плейсхолдеры и пишем в /etc/nftables.d/
+            import glob
+            import tempfile
+            nft_files = sorted(glob.glob(f"{NFTABLES_DIR_SRC}/*.nft"))
+            if not nft_files:
+                raise RuntimeError(f"Нет .nft файлов в {NFTABLES_DIR_SRC}")
+
+            log(f"⟳ Подготовка nftables ({len(nft_files)} файлов)...")
+            for src in nft_files:
+                with open(src) as f:
+                    content = f.read()
+                content = content.replace("__IFACE__", iface).replace("__PI_IP__", pi_ip)
+                dst = f"{NFTABLES_DIR_DST}/{os.path.basename(src)}"
+                # Пишем через временный файл с sudo tee
+                proc = subprocess.run(
+                    ["sudo", "-n", "/usr/bin/tee", dst],
+                    input=content, text=True,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                    timeout=5
+                )
+                if proc.returncode != 0:
+                    raise RuntimeError(f"Не удалось записать {dst}: {proc.stderr}")
+            log(f"  ✓ шаблоны применены (iface={iface})")
+
+            step("Перезапуск nftables",
+                 ["sudo", "-n", "/usr/bin/systemctl", "restart", "nftables"],
+                 timeout=15)
+
+            # ── Запускаем сервисы ─────────────────────────────────────────
+            log("── Запуск сервисов ──")
+            step("Запуск AWG туннеля",
+                 ["sudo", "-n", "/usr/bin/systemctl", "restart", "awg-quick@awg0"],
+                 timeout=20)
+            step("Перезапуск dnsmasq",
+                 ["sudo", "-n", "/usr/bin/systemctl", "restart", "dnsmasq"],
+                 ignore_fail=True)
+            step("Запуск zapret2",
+                 ["sudo", "-n", "/usr/bin/systemctl", "start", "zapret2-nfqws2"],
+                 ignore_fail=True)
+
+            # ── Health check ──────────────────────────────────────────────
+            log("── Проверка ──")
+            time.sleep(2)
+            log("⟳ Ping 1.1.1.1 через awg0...")
+            ping_out, _, ping_rc = run("ping -c 2 -W 2 -I awg0 1.1.1.1 2>&1", timeout=10)
+            if ping_rc == 0:
+                log("  ✓ Туннель работает")
+            else:
+                log("  ! Туннель не отвечает на ping")
+
+            log("✓ Сброс и переприменение завершены")
+            with _reset_lock:
+                _reset_state["success"] = True
+
+        except Exception as e:
+            log(f"✗ Ошибка: {e}")
+            with _reset_lock:
+                _reset_state["error"] = str(e)
+        finally:
+            with _reset_lock:
+                _reset_state["running"] = False
+                _reset_state["done"] = True
+
+    threading.Thread(target=run_reset, daemon=True).start()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/reset-apply/status")
+def api_reset_apply_status():
+    with _reset_lock:
+        return jsonify(dict(_reset_state))
 
 
 # ── API: logs ─────────────────────────────────────────────────────────────────
