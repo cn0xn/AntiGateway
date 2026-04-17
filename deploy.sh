@@ -69,8 +69,16 @@ systemctl start zapret2-nfqws2 \
   && log "zapret2 запущен ✓" || warn "zapret2 не запустился"
 
 log "Перезапускаем Web UI..."
-systemctl restart antigateway-ui \
-  && log "Web UI перезапущен ✓" || warn "Web UI не перезапустился"
+# Поддерживаем оба имени сервиса (legacy: gateway-ui, новое: antigateway-ui)
+if systemctl cat antigateway-ui &>/dev/null; then
+  systemctl restart antigateway-ui \
+    && log "Web UI перезапущен ✓ (antigateway-ui)" || warn "Web UI не перезапустился"
+elif systemctl cat gateway-ui &>/dev/null; then
+  systemctl restart gateway-ui \
+    && log "Web UI перезапущен ✓ (gateway-ui)" || warn "Web UI не перезапустился"
+else
+  warn "Сервис Web UI не найден (antigateway-ui / gateway-ui)"
+fi
 
 # ── 4. Health check ────────────────────────────────────────────────────────
 sleep 2

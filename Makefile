@@ -9,14 +9,14 @@ push:
 
 ## Задеплоить на Pi через rsync (без push)
 deploy:
-	rsync -az --exclude='.git' --exclude='SESSION.md' \
+	rsync -az --rsync-path="sudo rsync" --exclude='.git' --exclude='SESSION.md' \
 	    ./ $(PI_HOST):/opt/antigateway/
 	ssh $(PI_HOST) 'sudo bash /opt/antigateway/deploy.sh'
 
 ## Push на GitHub + деплой на Pi одной командой
 push-deploy:
 	git push
-	rsync -az --exclude='.git' --exclude='SESSION.md' \
+	rsync -az --rsync-path="sudo rsync" --exclude='.git' --exclude='SESSION.md' \
 	    ./ $(PI_HOST):/opt/antigateway/
 	ssh $(PI_HOST) 'sudo bash /opt/antigateway/deploy.sh'
 
