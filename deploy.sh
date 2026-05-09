@@ -25,6 +25,16 @@ cd "$INSTALL_DIR"
 # Если legacy директория ещё существует и содержит более свежий конфиг —
 # забираем его (актуальные настройки списков, токен), потом архивируем.
 mkdir -p "$ETC_DIR"
+mkdir -p /var/cache/antigateway/lists
+# Мигрируем кэш списков, если был под старым именем
+if [[ -d /var/cache/gateway-ui/lists && ! -L /var/cache/gateway-ui ]]; then
+  cp -an /var/cache/gateway-ui/lists/. /var/cache/antigateway/lists/ 2>/dev/null || true
+  ts=$(date +%Y%m%d-%H%M%S)
+  mv /var/cache/gateway-ui "/var/cache/gateway-ui.bak.${ts}"
+  log "Кэш мигрирован: /var/cache/gateway-ui → /var/cache/antigateway"
+fi
+chown -R "${SUDO_USER:-user}:${SUDO_USER:-user}" /var/cache/antigateway 2>/dev/null || true
+
 if [[ -d "$LEGACY_ETC" && ! -L "$LEGACY_ETC" ]]; then
   log "Миграция $LEGACY_ETC → $ETC_DIR"
   for f in lists-config.json auth.conf network.conf dns-records.json custom-hosts; do
