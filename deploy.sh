@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
-# AntiGateway — деплой на Pi
+# AntiGateway — деплой на Pi.
 # Запускается на Pi: sudo bash /opt/antigateway/deploy.sh
-# Файлы уже синхронизированы через rsync с dev-машины.
+# Файлы уже синхронизированы через rsync с dev-машины (см. Makefile).
+#
+# Идемпотентен: повторный запуск не ломает то что уже на месте. Включает
+# миграцию с legacy gateway-ui (старое имя сервиса/конфигов).
 set -euo pipefail
 
 INSTALL_DIR="/opt/antigateway"
-NETWORK_CONF="/etc/antigateway/network.conf"
+APP_DIR="/opt/antigateway/app"
+ETC_DIR="/etc/antigateway"
+LEGACY_ETC="/etc/gateway-ui"
+NETWORK_CONF="$ETC_DIR/network.conf"
 AWG_CONF="/etc/amnezia/amneziawg/awg0.conf"
 
 G='\033[0;32m'; Y='\033[1;33m'; R='\033[0;31m'; N='\033[0m'
@@ -15,81 +21,148 @@ err()  { echo -e "${R}[deploy]${N} $*"; }
 
 cd "$INSTALL_DIR"
 
-# ── 1. Чистим текущее состояние ───────────────────────────────────────────
-log "Останавливаем zapret2..."
-systemctl stop zapret2-nfqws2 2>/dev/null || true
-
-log "Отключаем AWG туннель..."
-/usr/bin/awg-quick down "$AWG_CONF" 2>/dev/null || true
-
-log "Сбрасываем nftables..."
-/usr/sbin/nft flush ruleset 2>/dev/null || true
-
-log "Сбрасываем правила маршрутизации..."
-ip rule del fwmark 0x1 table 100 priority 100 2>/dev/null || true
-ip route flush table 100 2>/dev/null || true
-
-# ── 2. Применяем новые конфиги ────────────────────────────────────────────
-log "Читаем network.conf..."
-if [[ ! -f "$NETWORK_CONF" ]]; then
-  err "Не найден $NETWORK_CONF — запустите install.sh сначала"; exit 1
+# ── 1. Миграция /etc/gateway-ui → /etc/antigateway ─────────────────────────
+# Если legacy директория ещё существует и содержит более свежий конфиг —
+# забираем его (актуальные настройки списков, токен), потом архивируем.
+mkdir -p "$ETC_DIR"
+if [[ -d "$LEGACY_ETC" && ! -L "$LEGACY_ETC" ]]; then
+  log "Миграция $LEGACY_ETC → $ETC_DIR"
+  for f in lists-config.json auth.conf network.conf dns-records.json custom-hosts; do
+    src="$LEGACY_ETC/$f"; dst="$ETC_DIR/$f"
+    if [[ -f "$src" ]]; then
+      if [[ ! -f "$dst" ]] || [[ "$src" -nt "$dst" ]]; then
+        cp -p "$src" "$dst"
+        log "  ← $f (взято из legacy)"
+      fi
+    fi
+  done
+  ts=$(date +%Y%m%d-%H%M%S)
+  mv "$LEGACY_ETC" "${LEGACY_ETC}.bak.${ts}"
+  log "  ${LEGACY_ETC} → ${LEGACY_ETC}.bak.${ts}"
 fi
-IFACE=$(python3 -c "import json; d=json.load(open('$NETWORK_CONF')); print(d['iface'])")
-PI_IP=$(python3  -c "import json; d=json.load(open('$NETWORK_CONF')); print(d['pi_ip'])")
-log "  iface=$IFACE  pi_ip=$PI_IP"
 
-log "Применяем nftables..."
-for f in "$INSTALL_DIR/nftables/"*.nft; do
-  dest="/etc/nftables.d/$(basename "$f")"
-  sed "s/__IFACE__/${IFACE}/g; s/__PI_IP__/${PI_IP}/g" "$f" > "$dest"
-done
-systemctl restart nftables && log "nftables перезапущены ✓" || { err "nftables не применились"; exit 1; }
+# Чистим legacy /etc/dnsmasq.d/antizapret.conf (теперь покрывается update-lists)
+rm -f /etc/dnsmasq.d/antizapret.conf
 
-log "Обновляем скрипты в /usr/local/bin..."
-for s in update-lists update-routes.sh update-antizapret.sh check-tunnel.sh; do
-  [[ -f "$INSTALL_DIR/scripts/$s" ]] \
-    && cp "$INSTALL_DIR/scripts/$s" /usr/local/bin/ \
-    && chmod +x "/usr/local/bin/$s"
+# ── 2. Helper-скрипты в /usr/local/bin/ (root-owned, 0755) ─────────────────
+log "Обновляем helper-скрипты..."
+for s in update-lists update-routes.sh check-tunnel.sh \
+         apply-awg-conf apply-dns-records apply-dns-hosts \
+         render-nftables antigateway-reset; do
+  if [[ -f "$INSTALL_DIR/scripts/$s" ]]; then
+    install -m 0755 -o root -g root "$INSTALL_DIR/scripts/$s" /usr/local/bin/
+  fi
 done
+# Удаляем legacy скрипт
+rm -f /usr/local/bin/update-antizapret.sh
+
+# ── 3. Sudoers (антигейтвей вместо legacy gateway-ui*) ─────────────────────
+# $WEB_USER берём из текущего unit-файла (legacy gateway-ui или нового). Это
+# даёт идемпотентность без необходимости интерактивного ввода.
+WEB_USER=$(systemctl show -p User --value antigateway-ui 2>/dev/null \
+       || systemctl show -p User --value gateway-ui 2>/dev/null || true)
+WEB_USER="${WEB_USER:-user}"
+log "Web UI пользователь: $WEB_USER"
+
+log "Устанавливаем /etc/sudoers.d/antigateway..."
+tmp_sudo=$(mktemp)
+trap 'rm -f "$tmp_sudo"' EXIT
+sed "s/__USER__/${WEB_USER}/g" "$INSTALL_DIR/config/sudoers.template" > "$tmp_sudo"
+# visudo -c проверяет синтаксис. Без проверки можно сломать sudo полностью.
+if visudo -cf "$tmp_sudo" >/dev/null; then
+  install -m 0440 -o root -g root "$tmp_sudo" /etc/sudoers.d/antigateway
+  # Удаляем legacy правила
+  rm -f /etc/sudoers.d/gateway-ui /etc/sudoers.d/gateway-ui-nft /etc/sudoers.d/route-control
+  log "  sudoers применён ✓"
+else
+  err "sudoers.template не прошёл visudo -c — НЕ применяю"
+  exit 1
+fi
+trap - EXIT
+rm -f "$tmp_sudo"
+
+# ── 4. Systemd unit antigateway-ui ─────────────────────────────────────────
+log "Обновляем antigateway-ui.service..."
+sed "s|__APP_DIR__|${APP_DIR}|g; s|__USER__|${WEB_USER}|g; s|__PORT__|8080|g" \
+  "$INSTALL_DIR/systemd/antigateway-ui.service" \
+  > /lib/systemd/system/antigateway-ui.service
+
+# Override для awg-quick (idempotent up)
+mkdir -p /etc/systemd/system/awg-quick@awg0.service.d
+install -m 0644 "$INSTALL_DIR/systemd/awg-quick-override.conf" \
+  /etc/systemd/system/awg-quick@awg0.service.d/override.conf
+
+systemctl daemon-reload
+
+# Останавливаем legacy gateway-ui.service, если он ещё активен
+if systemctl is-enabled gateway-ui >/dev/null 2>&1; then
+  log "Отключаем legacy gateway-ui.service..."
+  systemctl stop    gateway-ui 2>/dev/null || true
+  systemctl disable gateway-ui 2>/dev/null || true
+  # Удаляем legacy unit-файл (он лежит в /usr/lib/systemd/system)
+  rm -f /usr/lib/systemd/system/gateway-ui.service /lib/systemd/system/gateway-ui.service
+  systemctl daemon-reload
+fi
+
+systemctl enable antigateway-ui >/dev/null 2>&1
+
+# ── 5. Cron + logrotate ────────────────────────────────────────────────────
+log "Cron + logrotate..."
+cat > /etc/cron.d/antigateway-watchdog << 'EOF'
+* * * * * root /usr/local/bin/check-tunnel.sh
+EOF
+cat > /etc/cron.d/antigateway-update-routes << 'EOF'
+0 4 * * * root /usr/local/bin/update-routes.sh >> /var/log/antigateway-update-routes.log 2>&1
+EOF
+cat > /etc/cron.d/antigateway-update-lists << 'EOF'
+30 4 * * * root /usr/local/bin/update-lists >> /var/log/antigateway-update-lists.log 2>&1
+EOF
+rm -f /etc/cron.d/antigateway-update-antizapret /etc/cron.d/gateway-ui-watchdog \
+      /etc/cron.d/gateway-update-routes /etc/cron.d/gateway-update-antizapret
+
+install -m 0644 -o root -g root \
+  "$INSTALL_DIR/config/logrotate.conf" /etc/logrotate.d/antigateway
+
+# ── 6. Применяем nftables через render-nftables ───────────────────────────
+log "Рендерим nftables..."
+if [[ ! -f "$NETWORK_CONF" ]]; then
+  err "Не найден $NETWORK_CONF"; exit 1
+fi
+/usr/local/bin/render-nftables --src "$INSTALL_DIR/nftables" || {
+  err "render-nftables провалился"; exit 1
+}
+
+log "Перезапускаем nftables (атомарный flush+load)..."
+systemctl restart nftables && log "nftables перезапущены ✓" \
+  || { err "nftables не применились"; exit 1; }
 
 log "Обновляем dnsmasq конфиг..."
+IFACE=$(python3 -c "import json; print(json.load(open('$NETWORK_CONF'))['iface'])")
 sed "s/__IFACE__/${IFACE}/g" "$INSTALL_DIR/config/dnsmasq-main.conf" > /etc/dnsmasq.d/main.conf
 
-# ── 3. Запускаем сервисы ──────────────────────────────────────────────────
-log "Запускаем AWG туннель..."
-systemctl restart awg-quick@awg0 \
-  && log "AWG поднят ✓" || warn "AWG не запустился"
-
+# ── 7. Перезапускаем сервисы ──────────────────────────────────────────────
 log "Перезапускаем dnsmasq..."
-systemctl restart dnsmasq \
-  && log "dnsmasq запущен ✓" || warn "dnsmasq не запустился"
+systemctl restart dnsmasq && log "dnsmasq запущен ✓" || warn "dnsmasq не запустился"
 
-log "Запускаем zapret2..."
-systemctl start zapret2-nfqws2 \
-  && log "zapret2 запущен ✓" || warn "zapret2 не запустился"
+log "Перезапускаем AWG..."
+systemctl restart awg-quick@awg0 && log "AWG поднят ✓" || warn "AWG не запустился"
 
-log "Перезапускаем Web UI..."
-# Поддерживаем оба имени сервиса (legacy: gateway-ui, новое: antigateway-ui)
-if systemctl cat antigateway-ui &>/dev/null; then
-  systemctl restart antigateway-ui \
-    && log "Web UI перезапущен ✓ (antigateway-ui)" || warn "Web UI не перезапустился"
-elif systemctl cat gateway-ui &>/dev/null; then
-  systemctl restart gateway-ui \
-    && log "Web UI перезапущен ✓ (gateway-ui)" || warn "Web UI не перезапустился"
-else
-  warn "Сервис Web UI не найден (antigateway-ui / gateway-ui)"
-fi
+log "Перезапускаем zapret2..."
+systemctl restart zapret2-nfqws2 && log "zapret2 запущен ✓" || warn "zapret2 не запустился"
 
-# ── 4. Health check ────────────────────────────────────────────────────────
+log "Запускаем antigateway-ui..."
+systemctl restart antigateway-ui && log "antigateway-ui ✓" || warn "Web UI не перезапустился"
+
+# ── 8. Health check ────────────────────────────────────────────────────────
 sleep 2
 log "Проверка туннеля..."
 if ping -c 2 -W 2 -I awg0 1.1.1.1 &>/dev/null; then
-  log "Туннель работает ✓  (ping 1.1.1.1 через awg0)"
+  log "Туннель работает ✓"
 else
-  warn "Туннель не отвечает на ping (но сервисы могут работать)"
+  warn "Туннель не отвечает на ping"
 fi
 
-# ── 5. Итог ───────────────────────────────────────────────────────────────
+# ── 9. Итог ───────────────────────────────────────────────────────────────
 echo ""
 log "Деплой завершён ✓"
 for svc in antigateway-ui awg-quick@awg0 dnsmasq zapret2-nfqws2 nftables; do

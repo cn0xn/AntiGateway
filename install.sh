@@ -142,54 +142,84 @@ EOF
 # 4. AMNEZIAWG
 # ═══════════════════════════════════════════════════════════════════════════
 install_amneziawg() {
-  step "AmneziaWG"
+  step "AmneziaWG (через DKMS — модуль пересобирается при apt upgrade ядра)"
 
   if command -v awg &>/dev/null && lsmod | grep -q amneziawg 2>/dev/null; then
     log "AmneziaWG уже установлен"; return 0
   fi
 
-  # Попытка 1: deb-пакет (только x86_64)
-  if [[ "$AWG_ARCH" == "amd64" ]]; then
-    curl -fsSL "https://repository.amnezia.org/archive.key" \
-      | gpg --dearmor -o /usr/share/keyrings/amnezia.gpg >> "$LOG" 2>&1 \
-      && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/amnezia.gpg] https://repository.amnezia.org/debian stable main" \
-        > /etc/apt/sources.list.d/amnezia.list \
-      && apt-get update -qq \
-      && apt-get install -y -qq amneziawg >> "$LOG" 2>&1 \
-      && { log "AmneziaWG установлен через apt"; return 0; } || warn "apt-установка не удалась, собираем из исходников"
+  # PPA от Amnezia: содержит amneziawg-dkms + amneziawg-tools для всех архитектур.
+  # DKMS даёт автоматическую пересборку при apt upgrade ядра — иначе после
+  # апдейта kernel модуль исчезает и AWG ложится.
+  local codename
+  codename=$(lsb_release -cs 2>/dev/null || echo "")
+
+  # Ubuntu PPA работает на ubuntu-derivatives. На Debian/Raspbian PPA не подойдёт —
+  # там собираем из исходников через DKMS вручную.
+  if command -v add-apt-repository &>/dev/null && [[ -n "$codename" ]] \
+     && [[ "$(lsb_release -is 2>/dev/null || echo '')" == "Ubuntu" ]]; then
+    log "Подключаем ppa:amnezia/ppa для $codename…"
+    add-apt-repository -y ppa:amnezia/ppa >> "$LOG" 2>&1 \
+      || warn "add-apt-repository не сработал, fallback на сборку из исходников"
+    apt-get update -qq >> "$LOG" 2>&1
+    if apt-get install -y -qq amneziawg-dkms amneziawg-tools >> "$LOG" 2>&1; then
+      modprobe amneziawg >> "$LOG" 2>&1 || warn "modprobe amneziawg не удался — проверьте dkms status"
+      echo "amneziawg" > /etc/modules-load.d/amneziawg.conf
+      log "AmneziaWG установлен через DKMS (PPA)"
+      return 0
+    fi
+    warn "PPA-установка не удалась, fallback на сборку"
   fi
 
-  # Попытка 2: сборка модуля из исходников
+  # Fallback: ставим dkms-пакет вручную из upstream-исходников.
+  # Это даёт ту же DKMS-инфраструктуру, что и PPA.
+  apt-get install -y -qq dkms "linux-headers-$(uname -r)" >> "$LOG" 2>&1 \
+    || err "Не удалось поставить dkms / linux-headers"
+
   local build_dir
   build_dir=$(mktemp -d)
   trap "rm -rf $build_dir" RETURN
 
-  log "Сборка AmneziaWG из исходников (может занять 5-15 мин)…"
+  log "Клонируем amneziawg-linux-kernel-module…"
   git clone --depth=1 https://github.com/amnezia-vpn/amneziawg-linux-kernel-module \
-    "$build_dir/module" >> "$LOG" 2>&1 || err "Не удалось клонировать модуль AWG"
+    "$build_dir/module" >> "$LOG" 2>&1 || err "git clone module не удался"
 
-  make -C "$build_dir/module/src" -j"$(nproc)" >> "$LOG" 2>&1 \
-    || err "Сборка модуля провалилась"
+  local awg_ver
+  awg_ver=$(git -C "$build_dir/module" describe --tags --always 2>/dev/null \
+            | sed 's/^v//' || echo "1.0.0")
+  local dkms_dir="/usr/src/amneziawg-${awg_ver}"
 
-  local ko
-  ko=$(find "$build_dir/module" -name "amneziawg.ko" | head -1)
-  [[ -n "$ko" ]] || err "amneziawg.ko не найден после сборки"
+  mkdir -p "$dkms_dir"
+  cp -r "$build_dir/module/src/"* "$dkms_dir/"
 
-  local mod_dir="/lib/modules/$(uname -r)/extra"
-  mkdir -p "$mod_dir"
-  cp "$ko" "$mod_dir/"
-  depmod -a
+  # dkms.conf для пересборки при апгрейде ядра
+  cat > "$dkms_dir/dkms.conf" << EOF
+PACKAGE_NAME="amneziawg"
+PACKAGE_VERSION="${awg_ver}"
+BUILT_MODULE_NAME[0]="amneziawg"
+DEST_MODULE_LOCATION[0]="/kernel/net"
+AUTOINSTALL="yes"
+MAKE[0]="make"
+CLEAN="make clean"
+EOF
+
+  dkms add     -m amneziawg -v "$awg_ver" >> "$LOG" 2>&1 || err "dkms add не удался"
+  dkms build   -m amneziawg -v "$awg_ver" >> "$LOG" 2>&1 || err "dkms build не удался"
+  dkms install -m amneziawg -v "$awg_ver" >> "$LOG" 2>&1 || err "dkms install не удался"
+
   echo "amneziawg" > /etc/modules-load.d/amneziawg.conf
-  modprobe amneziawg >> "$LOG" 2>&1 || err "Не удалось загрузить модуль amneziawg"
+  modprobe amneziawg >> "$LOG" 2>&1 || err "modprobe amneziawg провалился"
 
-  # awg-tools
+  # awg-tools (userspace утилиты — отдельно)
+  log "Сборка amneziawg-tools…"
   git clone --depth=1 https://github.com/amnezia-vpn/amneziawg-tools \
-    "$build_dir/tools" >> "$LOG" 2>&1 || err "Не удалось клонировать awg-tools"
-  make -C "$build_dir/tools/src" -j"$(nproc)" >> "$LOG" 2>&1 || err "Сборка awg-tools провалилась"
-  cp "$build_dir/tools/src/awg" "$build_dir/tools/src/awg-quick" /usr/bin/
-  chmod +x /usr/bin/awg /usr/bin/awg-quick
+    "$build_dir/tools" >> "$LOG" 2>&1 || err "git clone tools не удался"
+  make -C "$build_dir/tools/src" -j"$(nproc)" >> "$LOG" 2>&1 \
+    || err "Сборка awg-tools провалилась"
+  install -m 0755 "$build_dir/tools/src/awg"       /usr/bin/
+  install -m 0755 "$build_dir/tools/src/awg-quick" /usr/bin/
 
-  log "AmneziaWG собран и установлен из исходников"
+  log "AmneziaWG установлен через DKMS (модуль пересоберётся при apt upgrade ядра)"
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -199,9 +229,11 @@ setup_awg() {
   step "AWG конфиг и сервис"
   mkdir -p /etc/amnezia/amneziawg
 
-  # Systemd сервис
-  if [[ ! -f /lib/systemd/system/awg-quick@.service ]]; then
-    cp "$INSTALL_DIR/systemd/awg-quick@.service" /lib/systemd/system/
+  # awg-quick@.service приходит с пакетом amneziawg-tools — не копируем
+  # из репо, иначе при апгрейде пакета будет расхождение версий.
+  if [[ ! -f /lib/systemd/system/awg-quick@.service \
+     && ! -f /usr/lib/systemd/system/awg-quick@.service ]]; then
+    err "awg-quick@.service не найден — установите пакет amneziawg-tools"
   fi
 
   # Override: idempotent up (ExecStartPre=-awg-quick down)
@@ -239,9 +271,11 @@ ip route del ${VPN_SERVER_IP}/32 via ${GW_IP} dev ${IFACE} 2>/dev/null || true; 
 ip route del default dev awg0 table 100 2>/dev/null || true; \
 ip rule del fwmark 0x1 table 100 priority 100 2>/dev/null || true"
 
-  # Вставляем Table/MTU/PostUp/PostDown внутрь [Interface], перед [Peer]
+  # Срезаем все хуки wg-quick (PreUp/PostUp/PreDown/PostDown) и Table/DNS/MTU —
+  # хуки eval'ятся как shell от root, остальное мы перекрываем явно ниже.
+  # Вставляем Table/MTU/PostUp/PostDown внутрь [Interface], перед [Peer].
   echo "$AWG_RAW_CONF" \
-    | grep -v -i "^PostUp\|^PostDown\|^Table\|^DNS\|^MTU" \
+    | grep -v -iE "^[[:space:]]*(PreUp|PostUp|PreDown|PostDown|Table|DNS|MTU)[[:space:]]*=" \
     | awk -v pu="PostUp = $postup" -v pd="PostDown = $postdown" '
         /^\[Peer\]/ && !done { print pu; print pd; done=1 }
         /^\[Interface\]/     { print; print "Table = off"; print "MTU = 1380"; next }
@@ -259,26 +293,15 @@ setup_nftables() {
   step "nftables"
   mkdir -p /etc/nftables.d
 
-  # Подставляем переменные в файлы с плейсхолдерами
-  for f in "$INSTALL_DIR/nftables/"*.nft; do
-    local dest="/etc/nftables.d/$(basename "$f")"
-    sed "s/__IFACE__/${IFACE}/g; s/__PI_IP__/${PI_IP}/g" "$f" > "$dest"
-  done
-
-  # Главный nftables.conf (явные include — glob не работает с flush ruleset в v1.0.x)
-  cat > /etc/nftables.conf << 'EOF'
-#!/usr/sbin/nft -f
-flush ruleset
-include "/etc/nftables.d/00_gateway_base.nft"
-include "/etc/nftables.d/10_nat.nft"
-include "/etc/nftables.d/20_dns_intercept.nft"
-include "/etc/nftables.d/30_killswitch.nft"
-include "/etc/nftables.d/40_ipv6_block.nft"
-EOF
+  # Шаблонизация и /etc/nftables.conf — централизованно через render-nftables.
+  # Запускаем по пути из репо (а не из /usr/local/bin/) на случай первой
+  # установки до setup_scripts.
+  python3 "$INSTALL_DIR/scripts/render-nftables" --src "$INSTALL_DIR/nftables" \
+    >> "$LOG" 2>&1 || err "render-nftables провалился"
 
   systemctl enable nftables >> "$LOG" 2>&1
   systemctl restart nftables >> "$LOG" 2>&1 || warn "nftables не применились — проверьте конфиги"
-  log "nftables настроены (5 файлов в /etc/nftables.d/)"
+  log "nftables настроены"
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -392,20 +415,22 @@ setup_scripts() {
   sed "s/__IFACE__/${IFACE}/g; s/__GW_IP__/${GW_IP}/g; s/__VPN_SERVER_IP__/${VPN_SERVER_IP:-0.0.0.0}/g" \
     "$INSTALL_DIR/scripts/check-tunnel.sh" > /usr/local/bin/check-tunnel.sh
 
-  # Остальные скрипты — копируем как есть
-  for s in update-lists update-routes.sh update-antizapret.sh; do
-    cp "$INSTALL_DIR/scripts/$s" /usr/local/bin/
+  # Остальные скрипты — копируем как есть. Helper-скрипты, которым sudoers
+  # даёт NOPASSWD, должны принадлежать root и быть невриатеабельны для user
+  # (иначе токен Web UI = root через подмену скрипта).
+  for s in update-lists update-routes.sh \
+           apply-awg-conf apply-dns-records apply-dns-hosts \
+           render-nftables antigateway-reset; do
+    install -m 0755 -o root -g root "$INSTALL_DIR/scripts/$s" /usr/local/bin/
   done
+  chmod 0755 /usr/local/bin/check-tunnel.sh
+  chown root:root /usr/local/bin/check-tunnel.sh
 
-  chmod +x /usr/local/bin/{check-tunnel.sh,update-lists,update-routes.sh,update-antizapret.sh}
-
-  # apply-awg-conf — утилита для Web UI
-  cat > /usr/local/bin/apply-awg-conf << 'EOF'
-#!/bin/bash
-cat > /etc/amnezia/amneziawg/awg0.conf
-chmod 600 /etc/amnezia/amneziawg/awg0.conf
-EOF
-  chmod +x /usr/local/bin/apply-awg-conf
+  # Удаляем legacy cron-задачу update-antizapret и её артефакты —
+  # эту роль теперь играет update-lists.
+  rm -f /etc/cron.d/antigateway-update-antizapret
+  rm -f /usr/local/bin/update-antizapret.sh
+  rm -f /etc/dnsmasq.d/antizapret.conf
 
   # Cron через /etc/cron.d/ — не трогает пользовательский crontab
   cat > /etc/cron.d/antigateway-watchdog << 'EOF'
@@ -414,11 +439,17 @@ EOF
   cat > /etc/cron.d/antigateway-update-routes << 'EOF'
 0 4 * * * root /usr/local/bin/update-routes.sh >> /var/log/antigateway-update-routes.log 2>&1
 EOF
-  cat > /etc/cron.d/antigateway-update-antizapret << 'EOF'
-30 4 * * * root /usr/local/bin/update-antizapret.sh >> /var/log/antigateway-update-antizapret.log 2>&1
+  # update-lists обновляет все включённые в lists-config.json списки доменов
+  # (включая russia_inside, который раньше тянулся отдельным update-antizapret).
+  cat > /etc/cron.d/antigateway-update-lists << 'EOF'
+30 4 * * * root /usr/local/bin/update-lists >> /var/log/antigateway-update-lists.log 2>&1
 EOF
 
-  log "Скрипты установлены, cron настроен (в /etc/cron.d/)"
+  # logrotate — иначе watchdog/update-* пишут логи бесконечно
+  install -m 0644 -o root -g root \
+    "$INSTALL_DIR/config/logrotate.conf" /etc/logrotate.d/antigateway
+
+  log "Скрипты установлены, cron + logrotate настроены"
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -429,12 +460,19 @@ setup_webui() {
 
   mkdir -p /etc/antigateway /var/cache/antigateway/lists
 
-  # Токен авторизации (генерируем один раз, не перезаписываем)
+  # Токен авторизации (генерируем один раз, не перезаписываем).
+  # Пишем атомарно через python -c — иначе SIGINT в момент записи оставит
+  # пустой файл и auth уйдёт в fail-closed.
   if [[ ! -f /etc/antigateway/auth.conf ]]; then
-    local token
-    token=$(python3 -c "import secrets; print(secrets.token_hex(32))")
-    python3 -c "import json; print(json.dumps({'token': '$token'}))" > /etc/antigateway/auth.conf
-    chmod 640 /etc/antigateway/auth.conf
+    python3 - << 'PY'
+import json, os, secrets, tempfile
+dst = "/etc/antigateway/auth.conf"
+fd, tmp = tempfile.mkstemp(prefix=".auth.", dir=os.path.dirname(dst))
+with os.fdopen(fd, "w") as f:
+    json.dump({"token": secrets.token_hex(32)}, f)
+os.chmod(tmp, 0o640)
+os.replace(tmp, dst)
+PY
     chown "root:$USER" /etc/antigateway/auth.conf
     log "Токен создан: /etc/antigateway/auth.conf"
   else
@@ -445,22 +483,26 @@ setup_webui() {
   [[ ! -f /etc/antigateway/lists-config.json ]] \
     && cp "$INSTALL_DIR/config/lists-config.json" /etc/antigateway/lists-config.json
 
-  # network.conf
-  cat > /etc/antigateway/network.conf << EOF
-{"iface": "$IFACE", "gw_ip": "$GW_IP", "pi_ip": "$PI_IP"}
-EOF
+  # network.conf — атомарно (используется и WebUI, и render-nftables)
+  python3 - << PY
+import json, os, tempfile
+dst = "/etc/antigateway/network.conf"
+fd, tmp = tempfile.mkstemp(prefix=".network.", dir=os.path.dirname(dst))
+with os.fdopen(fd, "w") as f:
+    json.dump({"iface": "$IFACE", "gw_ip": "$GW_IP", "pi_ip": "$PI_IP"}, f)
+os.chmod(tmp, 0o644)
+os.replace(tmp, dst)
+PY
 
-  # Симлинки для совместимости (app.py ищет конфиги в /etc/gateway-ui/)
-  if [[ ! -d /etc/gateway-ui ]]; then
-    ln -s /etc/antigateway /etc/gateway-ui
-  fi
-
-  # Права
-  chown -R "$USER:$USER" "$APP_DIR" /etc/antigateway /var/cache/antigateway
+  # Права. lists-config.json пишется самим Web UI (как user) — оставляем за user.
+  # auth.conf создан выше с root:user 0640. Helper-скрипты пишут dns-records.json
+  # и custom-hosts от root через apply-dns-* (mode 0644).
+  chown -R "$USER:$USER" "$APP_DIR" /var/cache/antigateway
+  chown "$USER:$USER" /etc/antigateway/lists-config.json /etc/antigateway/network.conf
 
   # Systemd сервис
   sed "s|__APP_DIR__|${APP_DIR}|g; s|__USER__|${USER}|g; s|__PORT__|${WEBUI_PORT}|g" \
-    "$INSTALL_DIR/systemd/gateway-ui.service" > /lib/systemd/system/antigateway-ui.service
+    "$INSTALL_DIR/systemd/antigateway-ui.service" > /lib/systemd/system/antigateway-ui.service
 
   systemctl daemon-reload
   systemctl enable  antigateway-ui >> "$LOG" 2>&1
@@ -546,13 +588,13 @@ main() {
   install_packages
   install_amneziawg
   setup_repo          # клонирует репо → $INSTALL_DIR
-  setup_nftables
   setup_dnsmasq
   install_zapret2
   setup_scripts
-  setup_webui
+  setup_webui         # создаёт /etc/antigateway/network.conf (нужен render-nftables)
+  setup_nftables      # после webui — рендерит из network.conf
   setup_sudoers
-  setup_awg           # после webui — конфиг AWG может прийти позже через UI
+  setup_awg           # после nftables — конфиг AWG может прийти позже через UI
   print_summary
 }
 

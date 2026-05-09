@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# antigateway-reset — полный сброс и переприменение конфигурации.
+#
+# Запускается через sudo из Web UI (`/api/reset-apply`). Выводит шаги
+# построчно — Web UI стримит лог пользователю.
+#
+# Порядок:
+#   1. Стоп zapret2 + AWG
+#   2. Рендерим nftables (network.conf → /etc/nftables.d/, /etc/nftables.conf)
+#   3. systemctl restart nftables (атомарный flush+include в одной транзакции —
+#      нет окна без kill-switch)
+#   4. Очищаем policy routing (rules + table 100) — заполнятся из PostUp AWG
+#   5. Запускаем AWG → dnsmasq → zapret2
+#   6. Health check: ping через awg0
+set -uo pipefail
+
+NET_CONF="/etc/antigateway/network.conf"
+AWG_CONF="/etc/amnezia/amneziawg/awg0.conf"
+
+step()  { printf '⟳ %s\n' "$*"; }
+ok()    { printf '  ✓ %s\n' "$*"; }
+skip()  { printf '  · %s\n' "$*"; }
+fail()  { printf '  ✗ %s\n' "$*" >&2; }
+
+# ── 1. Останавливаем активные сервисы ─────────────────────────────────────
+step "Останавливаем zapret2"
+systemctl stop zapret2-nfqws2 2>/dev/null && ok "stopped" || skip "не запущен"
+
+step "Опускаем AWG туннель"
+if [[ -f "$AWG_CONF" ]]; then
+  /usr/bin/awg-quick down "$AWG_CONF" 2>/dev/null && ok "down" || skip "уже опущен"
+else
+  skip "конфиг $AWG_CONF не найден"
+fi
+
+# ── 2. Рендерим nftables и применяем ─────────────────────────────────────
+step "Рендерим nftables из шаблонов"
+if ! /usr/local/bin/render-nftables; then
+  fail "render-nftables провалился"
+  exit 1
+fi
+ok "шаблоны применены"
+
+step "Перезапускаем nftables (атомарный flush+load)"
+if systemctl restart nftables; then
+  ok "перезапущены"
+else
+  fail "nftables не применились"
+  exit 1
+fi
+
+# ── 3. Очищаем policy routing (PostUp AWG восстановит) ───────────────────
+step "Очищаем policy routing"
+ip rule del fwmark 0x1 table 100 priority 100 2>/dev/null || true
+ip route flush table 100 2>/dev/null || true
+ok "ip rule + table 100 очищены"
+
+# ── 4. Запускаем сервисы ─────────────────────────────────────────────────
+step "Поднимаем AWG"
+if systemctl restart awg-quick@awg0; then
+  ok "AWG активен"
+else
+  fail "AWG не поднялся — см. journalctl -u awg-quick@awg0"
+fi
+
+step "Перезапускаем dnsmasq"
+systemctl restart dnsmasq && ok "dnsmasq активен" || fail "dnsmasq не запустился"
+
+step "Запускаем zapret2"
+systemctl start zapret2-nfqws2 && ok "zapret2 запущен" || skip "zapret2 не стартовал"
+
+# ── 5. Health check ──────────────────────────────────────────────────────
+sleep 2
+step "Ping 1.1.1.1 через awg0"
+if ping -c 2 -W 2 -I awg0 1.1.1.1 &>/dev/null; then
+  ok "туннель работает"
+else
+  fail "туннель не отвечает на ping"
+fi
+
+printf '✓ Сброс и переприменение завершены\n'

@@ -1,0 +1,53 @@
+#!/usr/bin/env python3
+"""
+apply-dns-records — атомарная запись /etc/antigateway/dns-records.json
+из stdin (JSON-массив записей).
+
+Запускается через sudo из web UI. sudoers даёт NOPASSWD только этому
+скрипту, чтобы не открывать `tee` на произвольные пути.
+
+stdin: JSON, ожидается массив объектов {name, ip, comment?}.
+       Любой иной формат — exit 1, файл не трогается.
+"""
+import json
+import os
+import sys
+import tempfile
+
+DEST = "/etc/antigateway/dns-records.json"
+
+def main():
+    raw = sys.stdin.read()
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        print(f"invalid JSON: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if not isinstance(data, list):
+        print("expected JSON array", file=sys.stderr)
+        sys.exit(1)
+
+    # Лёгкая schema-валидация — не пишем мусор
+    for i, rec in enumerate(data):
+        if not isinstance(rec, dict):
+            print(f"record {i}: not an object", file=sys.stderr); sys.exit(1)
+        if "name" not in rec or "ip" not in rec:
+            print(f"record {i}: missing name/ip", file=sys.stderr); sys.exit(1)
+
+    os.makedirs(os.path.dirname(DEST), exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".dns-records.", suffix=".json",
+                               dir=os.path.dirname(DEST))
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, DEST)
+    except Exception:
+        os.unlink(tmp)
+        raise
+
+if __name__ == "__main__":
+    main()

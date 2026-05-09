@@ -1,0 +1,74 @@
+#!/usr/bin/env python3
+"""
+apply-dns-hosts — пишет /etc/antigateway/custom-hosts из stdin (JSON-массив
+записей DNS) и делает `systemctl reload dnsmasq` (SIGHUP).
+
+Принимаем тот же формат, что и apply-dns-records — Web UI вызывает оба
+после изменения. Скрипт сам собирает строки hosts-файла, а не доверяет
+готовому тексту, чтобы исключить инъекции через поле `comment`.
+
+stdin: JSON-массив объектов {name, ip, comment?}.
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+
+DEST = "/etc/antigateway/custom-hosts"
+HOSTNAME_RE = re.compile(r'^[a-zA-Z0-9]([a-zA-Z0-9\-\.]{0,61}[a-zA-Z0-9])?$')
+IPV4_RE     = re.compile(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$')
+
+def sanitize_comment(s):
+    if not s:
+        return ""
+    # Срезаем переводы строк/контрол-символы — они бы разорвали запись на две.
+    s = re.sub(r'[\x00-\x1f\x7f]', ' ', str(s))
+    return s.strip()[:80]
+
+def main():
+    try:
+        data = json.loads(sys.stdin.read())
+    except json.JSONDecodeError as e:
+        print(f"invalid JSON: {e}", file=sys.stderr); sys.exit(1)
+
+    if not isinstance(data, list):
+        print("expected JSON array", file=sys.stderr); sys.exit(1)
+
+    lines = ["# AntiGateway custom hosts — auto-generated, edit via web UI"]
+    for i, rec in enumerate(data):
+        if not isinstance(rec, dict):
+            print(f"record {i}: not an object", file=sys.stderr); sys.exit(1)
+        name = str(rec.get("name", "")).strip().lower()
+        ip   = str(rec.get("ip", "")).strip()
+        if not HOSTNAME_RE.match(name):
+            print(f"record {i}: invalid hostname {name!r}", file=sys.stderr); sys.exit(1)
+        if not IPV4_RE.match(ip):
+            print(f"record {i}: invalid ipv4 {ip!r}", file=sys.stderr); sys.exit(1)
+        comment = sanitize_comment(rec.get("comment"))
+        suffix  = f"  # {comment}" if comment else ""
+        lines.append(f"{ip}\t{name}{suffix}")
+    content = "\n".join(lines) + "\n"
+
+    os.makedirs(os.path.dirname(DEST), exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".custom-hosts.",
+                               dir=os.path.dirname(DEST))
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(content)
+            f.flush(); os.fsync(f.fileno())
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, DEST)
+    except Exception:
+        os.unlink(tmp); raise
+
+    # SIGHUP — кэш dnsmasq сохраняется
+    r = subprocess.run(["systemctl", "reload", "dnsmasq"],
+                       capture_output=True, timeout=10)
+    if r.returncode != 0:
+        print(r.stderr.decode(errors="replace"), file=sys.stderr)
+        sys.exit(r.returncode)
+
+if __name__ == "__main__":
+    main()

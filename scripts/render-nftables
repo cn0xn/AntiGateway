@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+"""
+render-nftables — единая точка шаблонизации nftables/*.nft.
+
+Читает плейсхолдеры из /etc/antigateway/network.conf, рендерит файлы
+из источника (по умолчанию /opt/antigateway/nftables) в /etc/nftables.d/,
+пишет /etc/nftables.conf (явные include — glob не работает с `flush ruleset`
+в nft v1.0.x).
+
+Используется install.sh, deploy.sh и app.py (api_reset_apply) — раньше
+эта логика была дублирована в трёх местах.
+
+Применение nftables не делает — вызывайте `systemctl restart nftables`
+после успешного рендера.
+
+Usage: render-nftables [--src DIR]
+       по умолчанию --src /opt/antigateway/nftables
+"""
+import argparse
+import json
+import os
+import sys
+import tempfile
+
+NETWORK_CONF = "/etc/antigateway/network.conf"
+DST_DIR      = "/etc/nftables.d"
+MAIN_CONF    = "/etc/nftables.conf"
+
+def atomic_write(path, content, mode=0o644):
+    fd, tmp = tempfile.mkstemp(prefix="." + os.path.basename(path) + ".",
+                               dir=os.path.dirname(path))
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(content); f.flush(); os.fsync(f.fileno())
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except Exception:
+        os.unlink(tmp); raise
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--src", default="/opt/antigateway/nftables")
+    args = p.parse_args()
+
+    if not os.path.isdir(args.src):
+        print(f"src dir not found: {args.src}", file=sys.stderr); sys.exit(1)
+
+    try:
+        with open(NETWORK_CONF) as f:
+            nc = json.load(f)
+    except Exception as e:
+        print(f"can't read {NETWORK_CONF}: {e}", file=sys.stderr); sys.exit(1)
+
+    iface = nc.get("iface", "")
+    pi_ip = nc.get("pi_ip", "")
+    if not iface or not pi_ip:
+        print("network.conf must have iface + pi_ip", file=sys.stderr); sys.exit(1)
+
+    os.makedirs(DST_DIR, exist_ok=True)
+    files = sorted(f for f in os.listdir(args.src) if f.endswith(".nft"))
+    if not files:
+        print(f"no .nft files in {args.src}", file=sys.stderr); sys.exit(1)
+
+    for name in files:
+        with open(os.path.join(args.src, name)) as f:
+            content = f.read()
+        content = content.replace("__IFACE__", iface).replace("__PI_IP__", pi_ip)
+        atomic_write(os.path.join(DST_DIR, name), content)
+
+    # Главный nftables.conf — явные include в нужном порядке
+    main_lines = ["#!/usr/sbin/nft -f", "flush ruleset"]
+    for name in files:
+        main_lines.append(f'include "{DST_DIR}/{name}"')
+    atomic_write(MAIN_CONF, "\n".join(main_lines) + "\n")
+
+    print(f"rendered {len(files)} nft files (iface={iface}, pi_ip={pi_ip})")
+
+if __name__ == "__main__":
+    main()

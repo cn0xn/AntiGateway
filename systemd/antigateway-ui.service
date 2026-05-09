@@ -1,0 +1,29 @@
+[Unit]
+Description=AntiGateway Web UI
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__APP_DIR__
+ExecStart=/usr/bin/python3 __APP_DIR__/app.py
+Environment=WEBUI_PORT=__PORT__
+Restart=on-failure
+RestartSec=5
+
+# Минимальный hardening — Web UI не должен писать никуда, кроме своих кэшей
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/etc/antigateway /var/cache/antigateway
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictRealtime=yes
+
+[Install]
+WantedBy=multi-user.target

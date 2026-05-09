@@ -1,6 +1,12 @@
 # AntiGateway — passwordless sudo для web UI
-__USER__ ALL=(ALL) NOPASSWD: /usr/bin/awg show awg0
-__USER__ ALL=(ALL) NOPASSWD: /usr/bin/awg show awg0 transfer
+# __USER__ — пользователь, под которым работает antigateway-ui.service
+#
+# Принцип: write/control-операции выполняются через узкие helper-скрипты
+# в /usr/local/bin/ (читают stdin или работают по фиксированным путям),
+# а не через сырой `tee`/`nft -f`. Это исключает запись произвольных
+# файлов от root через скомпрометированный токен Web UI.
+
+# ── service control ──────────────────────────────────────────────────────
 __USER__ ALL=(ALL) NOPASSWD: /usr/bin/systemctl start zapret2-nfqws2
 __USER__ ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop zapret2-nfqws2
 __USER__ ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart zapret2-nfqws2
@@ -12,17 +18,32 @@ __USER__ ALL=(ALL) NOPASSWD: /usr/bin/systemctl start dnsmasq
 __USER__ ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop dnsmasq
 __USER__ ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart dnsmasq
 __USER__ ALL=(ALL) NOPASSWD: /usr/bin/systemctl reload dnsmasq
+
+# ── read-only диагностика ────────────────────────────────────────────────
+__USER__ ALL=(ALL) NOPASSWD: /usr/bin/awg show awg0
+__USER__ ALL=(ALL) NOPASSWD: /usr/bin/awg show awg0 transfer
 __USER__ ALL=(ALL) NOPASSWD: /usr/sbin/nft list tables
+__USER__ ALL=(ALL) NOPASSWD: /usr/sbin/nft -j list tables
 __USER__ ALL=(ALL) NOPASSWD: /usr/sbin/nft list set ip tunnel_routing blocked_ips
+__USER__ ALL=(ALL) NOPASSWD: /usr/sbin/nft -j list set ip tunnel_routing blocked_ips
 __USER__ ALL=(ALL) NOPASSWD: /usr/sbin/nft list set ip tunnel_routing zapret_ips
+__USER__ ALL=(ALL) NOPASSWD: /usr/sbin/nft -j list set ip tunnel_routing zapret_ips
 __USER__ ALL=(ALL) NOPASSWD: /usr/sbin/nft list table ip tunnel_routing
+__USER__ ALL=(ALL) NOPASSWD: /bin/cat /etc/amnezia/amneziawg/awg0.conf
+
+# ── журналы ──────────────────────────────────────────────────────────────
 __USER__ ALL=(ALL) NOPASSWD: /usr/bin/journalctl -u awg-quick@awg0 *
 __USER__ ALL=(ALL) NOPASSWD: /usr/bin/journalctl -u zapret2-nfqws2 *
 __USER__ ALL=(ALL) NOPASSWD: /usr/bin/journalctl -u dnsmasq *
-__USER__ ALL=(ALL) NOPASSWD: /usr/bin/journalctl -u gateway-ui *
+__USER__ ALL=(ALL) NOPASSWD: /usr/bin/journalctl -u antigateway-ui *
 __USER__ ALL=(ALL) NOPASSWD: /usr/bin/journalctl -u nftables *
+__USER__ ALL=(ALL) NOPASSWD: /usr/bin/journalctl -b *
+
+# ── helper-скрипты (write/orchestration) ─────────────────────────────────
 __USER__ ALL=(ALL) NOPASSWD: /usr/local/bin/update-lists
 __USER__ ALL=(ALL) NOPASSWD: /usr/local/bin/update-lists --force
 __USER__ ALL=(ALL) NOPASSWD: /usr/local/bin/update-lists --apply
 __USER__ ALL=(ALL) NOPASSWD: /usr/local/bin/apply-awg-conf
-__USER__ ALL=(ALL) NOPASSWD: /bin/cat /etc/amnezia/amneziawg/awg0.conf
+__USER__ ALL=(ALL) NOPASSWD: /usr/local/bin/apply-dns-records
+__USER__ ALL=(ALL) NOPASSWD: /usr/local/bin/apply-dns-hosts
+__USER__ ALL=(ALL) NOPASSWD: /usr/local/bin/antigateway-reset

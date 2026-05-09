@@ -1,18 +1,23 @@
 #!/usr/bin/env python3
 """
-Pi Gateway Web UI — backend API
-v2:
-- build_awg_conf: убраны iptables MASQUERADE (теперь в nftables/10_nat.nft)
-- run_cmd(): shell=False для команд без shell-фич
-- validate_iface/validate_ip: защита от injection в AWG конфиге
-- /api/diagnostics: проверки nftables, DNS-интерцепции, kill-switch
-- /api/status: TikTok/Telegram/Meta в routing, статус nftables таблиц
+AntiGateway Web UI — backend API.
+
+Принципы:
+- run_cmd(args)   — единственный способ запускать команды (shell=False)
+- require_auth    — на всех write-эндпоинтах + чувствительных read'ах
+                    (logs, full nft dump). Fail-closed: если auth.conf
+                    отсутствует/повреждён → 503.
+- write-операции от root идут через узкие helper-скрипты в /usr/local/bin/
+  (sudoers даёт NOPASSWD только им, не на сырой `tee`).
 """
-import subprocess
 import json
-import re
 import os
+import re
+import subprocess
+import sys
+import tempfile
 import threading
+import time
 import hmac
 from datetime import datetime
 from functools import wraps
@@ -20,38 +25,37 @@ from flask import Flask, jsonify, request, render_template
 
 app = Flask(__name__)
 
-CONFIG_FILE      = "/etc/gateway-ui/lists-config.json"
-NETWORK_CONF     = "/etc/gateway-ui/network.conf"
+# ── Пути ─────────────────────────────────────────────────────────────────────
+ETC_DIR          = "/etc/antigateway"
+CONFIG_FILE      = f"{ETC_DIR}/lists-config.json"
+NETWORK_CONF     = f"{ETC_DIR}/network.conf"
+AUTH_CONF        = f"{ETC_DIR}/auth.conf"
+DNS_RECORDS_FILE = f"{ETC_DIR}/dns-records.json"
 AWG_CONF_PATH    = "/etc/amnezia/amneziawg/awg0.conf"
-UPDATE_LISTS_BIN = "/usr/local/bin/update-lists"
 NFTABLES_CONF    = "/etc/nftables.conf"
-AUTH_CONF        = "/etc/gateway-ui/auth.conf"
-DNS_RECORDS_FILE = "/etc/antigateway/dns-records.json"
-DNS_CUSTOM_HOSTS = "/etc/antigateway/custom-hosts"
 
-# ── helpers ──────────────────────────────────────────────────────────────────
+# Helper-скрипты (см. sudoers.template)
+APPLY_AWG_BIN     = "/usr/local/bin/apply-awg-conf"
+APPLY_DNS_REC_BIN = "/usr/local/bin/apply-dns-records"
+APPLY_DNS_HST_BIN = "/usr/local/bin/apply-dns-hosts"
+RESET_BIN         = "/usr/local/bin/antigateway-reset"
+UPDATE_LISTS_BIN  = "/usr/local/bin/update-lists"
 
-def run(cmd, timeout=10):
-    """shell=True — только для команд с pipe/redirect/glob."""
+# ── Базовый хелпер запуска команд ────────────────────────────────────────────
+
+def run_cmd(args, timeout=10, input_str=None):
+    """Единственный способ запускать команды — shell=False всегда."""
     try:
-        r = subprocess.run(cmd, shell=True,
-                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                           timeout=timeout)
-        return (r.stdout.decode(errors="replace").strip(),
-                r.stderr.decode(errors="replace").strip(),
-                r.returncode)
-    except subprocess.TimeoutExpired:
-        return "", "timeout", 1
-
-def run_cmd(args, timeout=10):
-    """shell=False — для команд с фиксированными аргументами."""
-    try:
-        r = subprocess.run(args,
-                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                           timeout=timeout)
-        return (r.stdout.decode(errors="replace").strip(),
-                r.stderr.decode(errors="replace").strip(),
-                r.returncode)
+        r = subprocess.run(
+            args,
+            input=input_str,
+            text=input_str is not None,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=timeout,
+        )
+        out = r.stdout if isinstance(r.stdout, str) else r.stdout.decode(errors="replace")
+        err = r.stderr if isinstance(r.stderr, str) else r.stderr.decode(errors="replace")
+        return out.strip(), err.strip(), r.returncode
     except subprocess.TimeoutExpired:
         return "", "timeout", 1
 
@@ -59,41 +63,65 @@ def systemctl_active(unit):
     _, _, rc = run_cmd(["systemctl", "is-active", "--quiet", unit])
     return rc == 0
 
-def nft_set_count(set_name):
-    try:
-        r = subprocess.run(
-            ["sudo", "-n", "/usr/sbin/nft", "list", "set",
-             "ip", "tunnel_routing", set_name],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20
-        )
-        out = r.stdout.decode(errors="replace")
-        n = out.count(",")
-        return n + 1 if n > 0 else 0
-    except Exception:
-        return 0
+# ── nftables инспекция (через `nft -j`) ─────────────────────────────────────
 
-_nft_tables_cache = {"ts": 0, "tables": set()}
+def nft_json(args, timeout=15):
+    """Вызывает `nft -j ...` и парсит JSON. Возвращает None при ошибке."""
+    out, _, rc = run_cmd(["sudo", "-n", "/usr/sbin/nft", "-j"] + args, timeout=timeout)
+    if rc != 0 or not out:
+        return None
+    try:
+        return json.loads(out)
+    except json.JSONDecodeError:
+        return None
+
+def nft_set_count(set_name):
+    """Точное число элементов в сете через JSON output (был count(',') — фрагильно)."""
+    data = nft_json(["list", "set", "ip", "tunnel_routing", set_name])
+    if not data:
+        return 0
+    for item in data.get("nftables", []):
+        if "set" in item:
+            return len(item["set"].get("elem", []) or [])
+    return 0
+
+_nft_tables_cache = {"ts": 0.0, "tables": set()}
 
 def nft_get_tables():
-    """Получить список загруженных nftables таблиц (кэш 5 сек)."""
-    now = __import__("time").time()
+    """Список загруженных nftables таблиц (кэш 5с)."""
+    now = time.time()
     if now - _nft_tables_cache["ts"] < 5:
         return _nft_tables_cache["tables"]
-    out, _, rc = run_cmd(["sudo", "-n", "/usr/sbin/nft", "list", "tables"])
+    data = nft_json(["list", "tables"])
     tables = set()
-    if rc == 0:
-        for line in out.splitlines():
-            # Формат: "table ip name" или "table ip6 name"
-            parts = line.strip().split()
-            if len(parts) == 3 and parts[0] == "table":
-                tables.add(f"{parts[1]}:{parts[2]}")
+    if data:
+        for item in data.get("nftables", []):
+            t = item.get("table")
+            if t:
+                tables.add(f"{t.get('family')}:{t.get('name')}")
     _nft_tables_cache["ts"] = now
     _nft_tables_cache["tables"] = tables
     return tables
 
 def nft_table_exists(family, table):
-    """Проверить что nftables таблица загружена."""
     return f"{family}:{table}" in nft_get_tables()
+
+# ── Атомарная запись JSON-конфигов от лица user-а (lists-config) ────────────
+
+def atomic_write_json(path, data):
+    """tempfile + fsync + os.replace — не оставляет полпути даже при kill -9."""
+    d = os.path.dirname(path)
+    fd, tmp = tempfile.mkstemp(prefix="." + os.path.basename(path) + ".", dir=d)
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+            f.flush(); os.fsync(f.fileno())
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    except Exception:
+        try: os.unlink(tmp)
+        except FileNotFoundError: pass
+        raise
 
 def load_cfg():
     try:
@@ -103,8 +131,7 @@ def load_cfg():
         return {"lists": {}, "last_sync": None}
 
 def save_cfg(cfg):
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(cfg, f, indent=2, ensure_ascii=False)
+    atomic_write_json(CONFIG_FILE, cfg)
 
 # ── Auth ─────────────────────────────────────────────────────────────────────
 
@@ -116,52 +143,75 @@ def load_auth_token():
         return ""
 
 def require_auth(f):
-    """Декоратор: проверяет X-Auth-Token для write-операций."""
+    """X-Auth-Token + hmac.compare_digest. Fail-closed: нет/пустой токен → 503."""
     @wraps(f)
     def decorated(*args, **kwargs):
         expected = load_auth_token()
         if not expected:
-            # Auth не настроен — пропускаем (backward compat)
-            return f(*args, **kwargs)
+            # auth.conf отсутствует или содержит пустой токен — Web UI считаем
+            # неинициализированным. Раньше тут был fail-open ("backward compat") —
+            # это превращало любой битый auth.conf в открытое API.
+            return jsonify({"ok": False, "error": "auth not configured"}), 503
         provided = request.headers.get("X-Auth-Token", "")
-        # hmac.compare_digest — защита от timing attack
         if not provided or not hmac.compare_digest(provided, expected):
             return jsonify({"ok": False, "error": "Unauthorized"}), 401
         return f(*args, **kwargs)
     return decorated
 
 def validate_iface(iface):
-    """Только безопасные имена интерфейсов."""
     return bool(re.match(r'^[a-zA-Z0-9_.-]{1,15}$', iface))
 
 def validate_ip(ip):
-    """Простая проверка IPv4."""
     return bool(re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', ip))
 
-# ── API: status ───────────────────────────────────────────────────────────────
+def validate_hostname(name):
+    return bool(re.match(r'^[a-zA-Z0-9]([a-zA-Z0-9\-\.]{0,61}[a-zA-Z0-9])?$', name))
 
-@app.route("/api/status")
-def api_status():
+def sanitize_comment(s):
+    """Срезаем control-символы (особенно \\n) — иначе ломают hosts-файл."""
+    if not s:
+        return ""
+    return re.sub(r'[\x00-\x1f\x7f]', ' ', str(s)).strip()[:80]
+
+# ── Security headers ────────────────────────────────────────────────────────
+
+@app.after_request
+def _security_headers(resp):
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("X-Frame-Options", "DENY")
+    resp.headers.setdefault("Referrer-Policy", "no-referrer")
+    # CSP: всё со self, inline-handlers разрешены (UI на onclick=)
+    resp.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+        "connect-src 'self'; base-uri 'self'; frame-ancestors 'none'"
+    )
+    return resp
+
+# ── Кэш статуса ─────────────────────────────────────────────────────────────
+
+_status_cache = {"ts": 0.0, "data": None, "lock": threading.Lock()}
+STATUS_TTL = 3.0  # клиент опрашивает каждые 5с — 3с кэша исключают двойную работу
+
+def _build_status():
+    """Тяжёлая часть /api/status — 5+ subprocess'ов. Кэшируем."""
     zapret_active = systemctl_active("zapret2-nfqws2")
     zapret_pid = ""
     if zapret_active:
         out, _, _ = run_cmd(["pgrep", "-x", "nfqws2"])
-        zapret_pid = out.split("\n")[0]
+        zapret_pid = out.split("\n")[0] if out else ""
 
-    awg_out, _, _ = run("ip link show awg0 2>/dev/null")
-    awg_up = "UP" in awg_out
-    awg_handshake = ""
+    awg_link, _, _ = run_cmd(["ip", "link", "show", "awg0"])
+    awg_up = "UP" in awg_link
+    awg_handshake = awg_rx = awg_tx = ""
     if awg_up:
-        hs_out, _, _ = run("sudo -n /usr/bin/awg show awg0 2>/dev/null")
+        hs_out, _, _ = run_cmd(["sudo", "-n", "/usr/bin/awg", "show", "awg0"])
         m = re.search(r"latest handshake: (.+)", hs_out)
         awg_handshake = m.group(1) if m else ""
 
-    dnsmasq_active = systemctl_active("dnsmasq")
-
-    awg_rx = awg_tx = ""
-    if awg_up:
-        out, _, _ = run("sudo -n /usr/bin/awg show awg0 transfer 2>/dev/null")
-        m = re.search(r"(\d+)\s+(\d+)", out)
+        tr_out, _, _ = run_cmd(["sudo", "-n", "/usr/bin/awg", "show", "awg0", "transfer"])
+        m = re.search(r"(\d+)\s+(\d+)", tr_out)
         if m:
             def fmt_bytes(b):
                 b = int(b)
@@ -172,6 +222,8 @@ def api_status():
                 return f"{b:.1f} TB"
             awg_rx = fmt_bytes(m.group(1))
             awg_tx = fmt_bytes(m.group(2))
+
+    dnsmasq_active = systemctl_active("dnsmasq")
 
     cfg = load_cfg()
     def list_mode(list_id):
@@ -184,7 +236,7 @@ def api_status():
         "killswitch":     nft_table_exists("ip", "killswitch"),
     }
 
-    return jsonify({
+    return {
         "services": {
             "zapret2": {"active": zapret_active, "pid": zapret_pid},
             "awg":     {"active": awg_up, "handshake": awg_handshake,
@@ -205,10 +257,23 @@ def api_status():
             "zapret_ips":  nft_set_count("zapret_ips"),
         },
         "ts": datetime.now().strftime("%H:%M:%S"),
-    })
+    }
 
+@app.route("/api/status")
+def api_status():
+    now = time.time()
+    with _status_cache["lock"]:
+        if _status_cache["data"] and (now - _status_cache["ts"] < STATUS_TTL):
+            return jsonify(_status_cache["data"])
+    # Считаем без лока — параллельные запросы максимум продублируют работу,
+    # но потом всё равно увидят свежий кэш.
+    data = _build_status()
+    with _status_cache["lock"]:
+        _status_cache["data"] = data
+        _status_cache["ts"] = time.time()
+    return jsonify(data)
 
-# ── API: service control ──────────────────────────────────────────────────────
+# ── Service control ─────────────────────────────────────────────────────────
 
 @app.route("/api/service", methods=["POST"])
 @require_auth
@@ -229,18 +294,15 @@ def api_service():
 
     unit = unit_map[name]
     out, err, rc = run_cmd(
-        ["sudo", "-n", "/usr/bin/systemctl", action, unit],
-        timeout=15
+        ["sudo", "-n", "/usr/bin/systemctl", action, unit], timeout=15
     )
     return jsonify({"ok": rc == 0, "output": out or err})
 
-
-# ── API: lists ────────────────────────────────────────────────────────────────
+# ── Lists ────────────────────────────────────────────────────────────────────
 
 @app.route("/api/lists")
 def api_lists():
-    cfg = load_cfg()
-    return jsonify(cfg)
+    return jsonify(load_cfg())
 
 @app.route("/api/lists/save", methods=["POST"])
 @require_auth
@@ -256,240 +318,117 @@ def api_lists_save():
             cfg["lists"][list_id]["mode"] = changes["mode"]
         if "enabled" in changes:
             cfg["lists"][list_id]["enabled"] = bool(changes["enabled"])
-
     save_cfg(cfg)
     return jsonify({"ok": True})
 
+# ── Sync (общий шаблон стриминга stdout процесса) ──────────────────────────
 
-_sync_state  = {"running": False, "log": [], "done": False, "error": None}
-_sync_lock   = threading.Lock()
+class StreamingJob:
+    """Запускает команду и копирует stdout в буфер. Один экземпляр на эндпоинт."""
+    def __init__(self):
+        self.lock    = threading.Lock()
+        self.running = False
+        self.log     = []
+        self.done    = False
+        self.error   = None
+        self.success = False
 
-_reset_state = {"running": False, "log": [], "done": False, "error": None, "success": False}
-_reset_lock  = threading.Lock()
+    def start(self, argv):
+        with self.lock:
+            if self.running:
+                return False
+            self.running = True
+            self.log     = []
+            self.done    = False
+            self.error   = None
+            self.success = False
+        threading.Thread(target=self._run, args=(argv,), daemon=True).start()
+        return True
+
+    def _run(self, argv):
+        try:
+            proc = subprocess.Popen(
+                argv,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1,
+            )
+            for line in proc.stdout:
+                with self.lock:
+                    self.log.append(line.rstrip())
+            proc.wait()
+            with self.lock:
+                self.success = (proc.returncode == 0)
+                if proc.returncode != 0:
+                    self.error = f"exit {proc.returncode}"
+        except Exception as e:
+            with self.lock:
+                self.error = str(e)
+        finally:
+            with self.lock:
+                self.running = False
+                self.done    = True
+
+    def snapshot(self):
+        with self.lock:
+            return {
+                "running": self.running, "log": list(self.log),
+                "done": self.done, "error": self.error, "success": self.success,
+            }
+
+_sync_job  = StreamingJob()
+_reset_job = StreamingJob()
 
 @app.route("/api/lists/sync", methods=["POST"])
 @require_auth
 def api_lists_sync():
     force = (request.json or {}).get("force", False)
-
-    with _sync_lock:
-        if _sync_state["running"]:
-            return jsonify({"ok": False, "error": "уже выполняется"})
-        _sync_state.update({"running": True, "log": [], "done": False, "error": None})
-
-    def run_sync():
-        cmd = ["sudo", "-n", "/usr/local/bin/update-lists"]
-        if force:
-            cmd.append("--force")
-        try:
-            proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1
-            )
-            for line in proc.stdout:
-                with _sync_lock:
-                    _sync_state["log"].append(line.rstrip())
-            proc.wait()
-            with _sync_lock:
-                _sync_state["running"] = False
-                _sync_state["done"]    = True
-                if proc.returncode != 0:
-                    _sync_state["error"] = f"exit {proc.returncode}"
-        except Exception as e:
-            with _sync_lock:
-                _sync_state["running"] = False
-                _sync_state["error"]   = str(e)
-
-    threading.Thread(target=run_sync, daemon=True).start()
+    cmd = ["sudo", "-n", UPDATE_LISTS_BIN]
+    if force:
+        cmd.append("--force")
+    if not _sync_job.start(cmd):
+        return jsonify({"ok": False, "error": "уже выполняется"})
     return jsonify({"ok": True})
-
 
 @app.route("/api/lists/sync/status")
 def api_lists_sync_status():
-    with _sync_lock:
-        return jsonify(dict(_sync_state))
+    return jsonify(_sync_job.snapshot())
 
-
-# ── API: reset and reapply ────────────────────────────────────────────────
-
-NETWORK_CONF_PATH = "/etc/antigateway/network.conf"
-AWG_CONF_PATH_SYS = "/etc/amnezia/amneziawg/awg0.conf"
-NFTABLES_DIR_SRC  = "/opt/antigateway/nftables"
-NFTABLES_DIR_DST  = "/etc/nftables.d"
+# ── Reset and reapply (через antigateway-reset, стрим stdout) ──────────────
 
 @app.route("/api/reset-apply", methods=["POST"])
 @require_auth
 def api_reset_apply():
-    with _reset_lock:
-        if _reset_state["running"]:
-            return jsonify({"ok": False, "error": "уже выполняется"})
-        _reset_state.update({"running": True, "log": [], "done": False,
-                              "error": None, "success": False})
-
-    def run_reset():
-        import time
-
-        def log(msg):
-            with _reset_lock:
-                _reset_state["log"].append(msg)
-
-        def step(label, args, timeout=15, ignore_fail=False):
-            log(f"⟳ {label}")
-            out, err, rc = run_cmd(args, timeout=timeout)
-            if rc == 0:
-                log(f"  ✓ готово")
-            elif ignore_fail:
-                log(f"  · пропущено ({err[:60]})" if err else "  · нет")
-            else:
-                log(f"  ✗ ошибка: {err[:80]}")
-                raise RuntimeError(f"{label}: {err}")
-
-        try:
-            # ── Чистим ────────────────────────────────────────────────────
-            log("── Сброс текущего состояния ──")
-            step("Остановка zapret2",
-                 ["sudo", "-n", "/usr/bin/systemctl", "stop", "zapret2-nfqws2"],
-                 ignore_fail=True)
-            step("Отключение AWG туннеля",
-                 ["sudo", "-n", "/usr/bin/awg-quick", "down", AWG_CONF_PATH_SYS],
-                 ignore_fail=True)
-            step("Сброс nftables",
-                 ["sudo", "-n", "/usr/sbin/nft", "flush", "ruleset"],
-                 ignore_fail=True)
-            # routing rules — игнорируем ошибки (правил может не быть)
-            run_cmd(["ip", "rule", "del", "fwmark", "0x1", "table", "100",
-                     "priority", "100"])
-            run_cmd(["ip", "route", "flush", "table", "100"])
-            log("  ✓ правила маршрутизации сброшены")
-
-            # ── Применяем новые конфиги ───────────────────────────────────
-            log("── Применение конфигурации ──")
-
-            # Читаем network.conf для подстановки плейсхолдеров
-            try:
-                with open(NETWORK_CONF_PATH) as f:
-                    nc = json.load(f)
-                iface = nc["iface"]
-                pi_ip = nc.get("pi_ip", "")
-            except Exception as e:
-                raise RuntimeError(f"Не найден network.conf: {e}")
-
-            # Подставляем плейсхолдеры и пишем в /etc/nftables.d/
-            import glob
-            import tempfile
-            nft_files = sorted(glob.glob(f"{NFTABLES_DIR_SRC}/*.nft"))
-            if not nft_files:
-                raise RuntimeError(f"Нет .nft файлов в {NFTABLES_DIR_SRC}")
-
-            log(f"⟳ Подготовка nftables ({len(nft_files)} файлов)...")
-            for src in nft_files:
-                with open(src) as f:
-                    content = f.read()
-                content = content.replace("__IFACE__", iface).replace("__PI_IP__", pi_ip)
-                dst = f"{NFTABLES_DIR_DST}/{os.path.basename(src)}"
-                # Пишем через временный файл с sudo tee
-                proc = subprocess.run(
-                    ["sudo", "-n", "/usr/bin/tee", dst],
-                    input=content, text=True,
-                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-                    timeout=5
-                )
-                if proc.returncode != 0:
-                    raise RuntimeError(f"Не удалось записать {dst}: {proc.stderr}")
-            log(f"  ✓ шаблоны применены (iface={iface})")
-
-            step("Перезапуск nftables",
-                 ["sudo", "-n", "/usr/bin/systemctl", "restart", "nftables"],
-                 timeout=15)
-
-            # ── Запускаем сервисы ─────────────────────────────────────────
-            log("── Запуск сервисов ──")
-            step("Запуск AWG туннеля",
-                 ["sudo", "-n", "/usr/bin/systemctl", "restart", "awg-quick@awg0"],
-                 timeout=20)
-            step("Перезапуск dnsmasq",
-                 ["sudo", "-n", "/usr/bin/systemctl", "restart", "dnsmasq"],
-                 ignore_fail=True)
-            step("Запуск zapret2",
-                 ["sudo", "-n", "/usr/bin/systemctl", "start", "zapret2-nfqws2"],
-                 ignore_fail=True)
-
-            # ── Health check ──────────────────────────────────────────────
-            log("── Проверка ──")
-            time.sleep(2)
-            log("⟳ Ping 1.1.1.1 через awg0...")
-            ping_out, _, ping_rc = run("ping -c 2 -W 2 -I awg0 1.1.1.1 2>&1", timeout=10)
-            if ping_rc == 0:
-                log("  ✓ Туннель работает")
-            else:
-                log("  ! Туннель не отвечает на ping")
-
-            log("✓ Сброс и переприменение завершены")
-            with _reset_lock:
-                _reset_state["success"] = True
-
-        except Exception as e:
-            log(f"✗ Ошибка: {e}")
-            with _reset_lock:
-                _reset_state["error"] = str(e)
-        finally:
-            with _reset_lock:
-                _reset_state["running"] = False
-                _reset_state["done"] = True
-
-    threading.Thread(target=run_reset, daemon=True).start()
+    if not _reset_job.start(["sudo", "-n", RESET_BIN]):
+        return jsonify({"ok": False, "error": "уже выполняется"})
     return jsonify({"ok": True})
-
 
 @app.route("/api/reset-apply/status")
 def api_reset_apply_status():
-    with _reset_lock:
-        return jsonify(dict(_reset_state))
+    return jsonify(_reset_job.snapshot())
 
-
-# ── API: DNS records ──────────────────────────────────────────────────────
-
-def validate_hostname(name):
-    """Простая валидация hostname / домена."""
-    return bool(re.match(r'^[a-zA-Z0-9]([a-zA-Z0-9\-\.]{0,61}[a-zA-Z0-9])?$', name))
+# ── DNS records ──────────────────────────────────────────────────────────────
 
 def load_dns_records():
     try:
         with open(DNS_RECORDS_FILE) as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return []
-    except Exception:
+            data = json.load(f)
+            return data if isinstance(data, list) else []
+    except (FileNotFoundError, json.JSONDecodeError):
         return []
 
-def save_dns_records(records):
-    proc = subprocess.run(
-        ["sudo", "-n", "/usr/bin/tee", DNS_RECORDS_FILE],
-        input=json.dumps(records, indent=2, ensure_ascii=False),
-        text=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=5
-    )
-    return proc.returncode == 0
-
-def write_dnsmasq_custom(records):
-    """Записывает /etc/antigateway/custom-hosts и перезагружает dnsmasq (SIGHUP)."""
-    lines = ["# AntiGateway custom hosts — auto-generated, edit via web UI"]
-    for r in records:
-        comment = f"  # {r['comment']}" if r.get("comment") else ""
-        lines.append(f"{r['ip']}\t{r['name']}{comment}")
-    content = "\n".join(lines) + "\n"
-    proc = subprocess.run(
-        ["sudo", "-n", "/usr/bin/tee", DNS_CUSTOM_HOSTS],
-        input=content, text=True,
-        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=5
-    )
-    if proc.returncode != 0:
-        return False, proc.stderr
-    _, err, rc = run_cmd(
-        ["sudo", "-n", "/usr/bin/systemctl", "reload", "dnsmasq"], timeout=8
-    )
-    return rc == 0, err
+def write_dns_records_via_helper(records):
+    """Пишет dns-records.json + custom-hosts через два sudo-helper'а."""
+    payload = json.dumps(records, ensure_ascii=False)
+    out1, err1, rc1 = run_cmd(["sudo", "-n", APPLY_DNS_REC_BIN], input_str=payload)
+    if rc1 != 0:
+        return False, err1 or out1 or "apply-dns-records failed"
+    out2, err2, rc2 = run_cmd(["sudo", "-n", APPLY_DNS_HST_BIN], input_str=payload, timeout=15)
+    if rc2 != 0:
+        return False, err2 or out2 or "apply-dns-hosts failed"
+    return True, None
 
 @app.route("/api/dns")
+@require_auth
 def api_dns_list():
     return jsonify({"records": load_dns_records()})
 
@@ -499,7 +438,7 @@ def api_dns_add():
     data    = request.json or {}
     name    = data.get("name", "").strip().lower()
     ip      = data.get("ip", "").strip()
-    comment = data.get("comment", "").strip()[:80]
+    comment = sanitize_comment(data.get("comment", ""))
 
     if not name or not ip:
         return jsonify({"ok": False, "error": "name и ip обязательны"}), 400
@@ -509,69 +448,61 @@ def api_dns_add():
         return jsonify({"ok": False, "error": "Недопустимый IPv4 адрес"}), 400
 
     records = load_dns_records()
-    if any(r["name"] == name for r in records):
+    if any(r.get("name") == name for r in records):
         return jsonify({"ok": False, "error": f"Запись '{name}' уже существует"}), 409
 
     records.append({"name": name, "ip": ip, "comment": comment})
-    if not save_dns_records(records):
-        return jsonify({"ok": False, "error": "Не удалось сохранить"}), 500
-
-    ok, err = write_dnsmasq_custom(records)
-    return jsonify({"ok": ok, "error": err if not ok else None, "records": records})
+    ok, err = write_dns_records_via_helper(records)
+    return jsonify({"ok": ok, "error": err, "records": records if ok else None})
 
 @app.route("/api/dns/<name>", methods=["DELETE"])
 @require_auth
 def api_dns_delete(name):
     name = name.strip().lower()
+    if not validate_hostname(name):
+        return jsonify({"ok": False, "error": "Недопустимое имя"}), 400
     records = load_dns_records()
-    new_records = [r for r in records if r["name"] != name]
+    new_records = [r for r in records if r.get("name") != name]
     if len(new_records) == len(records):
         return jsonify({"ok": False, "error": "Запись не найдена"}), 404
-
-    if not save_dns_records(new_records):
-        return jsonify({"ok": False, "error": "Не удалось сохранить"}), 500
-
-    ok, err = write_dnsmasq_custom(new_records)
-    return jsonify({"ok": ok, "error": err if not ok else None, "records": new_records})
+    ok, err = write_dns_records_via_helper(new_records)
+    return jsonify({"ok": ok, "error": err, "records": new_records if ok else None})
 
 @app.route("/api/dns/<name>", methods=["PUT"])
 @require_auth
 def api_dns_update(name):
     name = name.strip().lower()
+    if not validate_hostname(name):
+        return jsonify({"ok": False, "error": "Недопустимое имя"}), 400
     data = request.json or {}
     ip      = data.get("ip", "").strip()
-    comment = data.get("comment", "").strip()[:80]
-
+    comment = sanitize_comment(data.get("comment", ""))
     if not validate_ip(ip):
         return jsonify({"ok": False, "error": "Недопустимый IPv4 адрес"}), 400
 
     records = load_dns_records()
+    found = False
     for r in records:
-        if r["name"] == name:
+        if r.get("name") == name:
             r["ip"] = ip
             r["comment"] = comment
+            found = True
             break
-    else:
+    if not found:
         return jsonify({"ok": False, "error": "Запись не найдена"}), 404
+    ok, err = write_dns_records_via_helper(records)
+    return jsonify({"ok": ok, "error": err, "records": records if ok else None})
 
-    if not save_dns_records(records):
-        return jsonify({"ok": False, "error": "Не удалось сохранить"}), 500
-
-    ok, err = write_dnsmasq_custom(records)
-    return jsonify({"ok": ok, "error": err if not ok else None, "records": records})
-
-
-# ── API: logs ─────────────────────────────────────────────────────────────────
+# ── Logs ─────────────────────────────────────────────────────────────────────
 
 @app.route("/api/logs")
+@require_auth
 def api_logs():
     service = request.args.get("service", "zapret2")
-
     if service == "system":
-        out, _, _ = run(
-            "sudo -n /usr/bin/journalctl -b -n 80 --no-pager"
-            " --output=short-iso -p warning 2>/dev/null",
-            timeout=10
+        out, _, _ = run_cmd(
+            ["sudo", "-n", "/usr/bin/journalctl", "-b", "-n", "80",
+             "--no-pager", "--output=short-iso", "-p", "warning"], timeout=10
         )
         return jsonify({"lines": out.splitlines()})
 
@@ -583,115 +514,93 @@ def api_logs():
     unit = unit_map.get(service, "zapret2-nfqws2")
     out, _, _ = run_cmd(
         ["sudo", "-n", "/usr/bin/journalctl", "-u", unit,
-         "-n", "60", "--no-pager", "--output=short-iso"],
-        timeout=10
+         "-n", "60", "--no-pager", "--output=short-iso"], timeout=10
     )
     return jsonify({"lines": out.splitlines()})
 
-
-# ── API: diagnostics ──────────────────────────────────────────────────────────
+# ── Diagnostics ─────────────────────────────────────────────────────────────
 
 @app.route("/api/diagnostics")
 def api_diagnostics():
     checks = []
 
-    # 1. AWG tunnel connectivity
-    awg_out, _, _ = run("ip link show awg0 2>/dev/null")
-    awg_up = "UP" in awg_out
+    # 1. AWG tunnel
+    awg_link, _, _ = run_cmd(["ip", "link", "show", "awg0"])
+    awg_up = "UP" in awg_link
     if awg_up:
-        ping_out, _, ping_rc = run("ping -c 2 -W 2 -I awg0 1.1.1.1 2>&1", timeout=10)
+        ping_out, _, ping_rc = run_cmd(
+            ["ping", "-c", "2", "-W", "2", "-I", "awg0", "1.1.1.1"], timeout=10
+        )
         m = re.search(r"(\d+)% packet loss", ping_out)
         loss = int(m.group(1)) if m else 100
         stat_line = ping_out.split("\n")[-1] if ping_out else ""
-        checks.append({
-            "name": "Туннель AWG",
-            "ok": ping_rc == 0 and loss < 100,
-            "detail": stat_line if ping_rc == 0 else "нет ответа от 1.1.1.1",
-        })
+        checks.append({"name": "Туннель AWG",
+                       "ok": ping_rc == 0 and loss < 100,
+                       "detail": stat_line if ping_rc == 0 else "нет ответа от 1.1.1.1"})
     else:
         checks.append({"name": "Туннель AWG", "ok": False,
-                        "detail": "интерфейс awg0 DOWN"})
+                       "detail": "интерфейс awg0 DOWN"})
 
     # 2. DNS via dnsmasq
     dns_out, _, dns_rc = run_cmd(
-        ["dig", "+short", "+time=3", "+tries=1", "youtube.com", "@127.0.0.1"],
-        timeout=8
+        ["dig", "+short", "+time=3", "+tries=1", "youtube.com", "@127.0.0.1"], timeout=8
     )
     dns_ok = dns_rc == 0 and bool(dns_out.strip())
-    checks.append({
-        "name": "DNS (dnsmasq)",
-        "ok": dns_ok,
-        "detail": f"youtube.com → {dns_out.strip()[:80]}" if dns_ok
-                  else "нет ответа от 127.0.0.1",
-    })
+    checks.append({"name": "DNS (dnsmasq)", "ok": dns_ok,
+                   "detail": (f"youtube.com → {dns_out.strip()[:80]}" if dns_ok
+                              else "нет ответа от 127.0.0.1")})
 
-    # 3. nft blocked_ips
+    # 3. nft tunnel_routing
     blocked = nft_set_count("blocked_ips")
     zapret  = nft_set_count("zapret_ips")
-    checks.append({
-        "name": "nft tunnel_routing",
-        "ok": nft_table_exists("ip", "tunnel_routing") and blocked > 0,
-        "detail": f"blocked_ips: {blocked:,} IP,  zapret_ips: {zapret:,} IP",
-    })
+    checks.append({"name": "nft tunnel_routing",
+                   "ok": nft_table_exists("ip", "tunnel_routing") and blocked > 0,
+                   "detail": f"blocked_ips: {blocked:,} IP, zapret_ips: {zapret:,} IP"})
 
-    # 4. NAT (nftables)
+    # 4. NAT
     nat_ok = nft_table_exists("ip", "gateway_nat")
-    checks.append({
-        "name": "nft MASQUERADE (NAT)",
-        "ok": nat_ok,
-        "detail": "nftables gateway_nat активен" if nat_ok
-                  else "MASQUERADE не настроен — интернет у клиентов не работает",
-    })
+    checks.append({"name": "nft MASQUERADE (NAT)", "ok": nat_ok,
+                   "detail": ("nftables gateway_nat активен" if nat_ok
+                              else "MASQUERADE не настроен — интернет у клиентов не работает")})
 
     # 5. DNS-интерцепция
     di_ok = nft_table_exists("ip", "dns_intercept")
-    checks.append({
-        "name": "nft DNS-интерцепция",
-        "ok": di_ok,
-        "detail": "port 53 → dnsmasq, DoH заблокирован" if di_ok
-                  else "клиенты могут обойти dnsmasq (TikTok, etc.)",
-    })
+    checks.append({"name": "nft DNS-интерцепция", "ok": di_ok,
+                   "detail": ("port 53 → dnsmasq, DoH заблокирован" if di_ok
+                              else "клиенты могут обойти dnsmasq (TikTok, etc.)")})
 
     # 6. Kill-switch
     ks_ok = nft_table_exists("ip", "killswitch")
-    checks.append({
-        "name": "nft Kill-switch",
-        "ok": ks_ok,
-        "detail": "утечка при падении VPN заблокирована" if ks_ok
-                  else "при падении VPN трафик идёт через ISP",
-    })
+    checks.append({"name": "nft Kill-switch", "ok": ks_ok,
+                   "detail": ("утечка при падении VPN заблокирована" if ks_ok
+                              else "при падении VPN трафик идёт через ISP")})
 
     # 7. fwmark routing rule
-    rules_out, _, _ = run("ip rule list 2>/dev/null")
+    rules_out, _, _ = run_cmd(["ip", "rule", "list"])
     has_fwmark = "fwmark 0x1" in rules_out
-    checks.append({
-        "name": "ip rule fwmark",
-        "ok": has_fwmark,
-        "detail": "fwmark 0x1 → table 100" if has_fwmark
-                  else "правило маршрутизации отсутствует",
-    })
+    checks.append({"name": "ip rule fwmark", "ok": has_fwmark,
+                   "detail": ("fwmark 0x1 → table 100" if has_fwmark
+                              else "правило маршрутизации отсутствует")})
 
     # 8. Default route table 100
-    rt_out, _, _ = run("ip route show table 100 2>/dev/null")
+    rt_out, _, _ = run_cmd(["ip", "route", "show", "table", "100"])
     has_default = "default" in rt_out
-    checks.append({
-        "name": "Маршрут table 100",
-        "ok": has_default,
-        "detail": rt_out.strip()[:80] if has_default else "нет default в table 100",
-    })
+    checks.append({"name": "Маршрут table 100", "ok": has_default,
+                   "detail": rt_out.strip()[:80] if has_default else "нет default в table 100"})
 
     return jsonify({"checks": checks, "ts": datetime.now().strftime("%H:%M:%S")})
 
-
-# ── API: nftables ─────────────────────────────────────────────────────────────
+# ── nftables full dump (только под auth — раскрывает структуру firewall) ────
 
 @app.route("/api/nftables")
+@require_auth
 def api_nftables():
-    out, _, _ = run("sudo -n /usr/sbin/nft list table ip tunnel_routing 2>/dev/null")
+    out, _, _ = run_cmd(
+        ["sudo", "-n", "/usr/sbin/nft", "list", "table", "ip", "tunnel_routing"]
+    )
     return jsonify({"raw": out})
 
-
-# ── API: AWG config ───────────────────────────────────────────────────────────
+# ── AWG config ──────────────────────────────────────────────────────────────
 
 def load_network_conf():
     try:
@@ -703,67 +612,67 @@ def load_network_conf():
 def save_network_conf(data):
     nc = load_network_conf()
     nc.update(data)
-    with open(NETWORK_CONF, "w") as f:
-        json.dump(nc, f, indent=2)
+    atomic_write_json(NETWORK_CONF, nc)
 
 def build_awg_conf(raw_conf, iface, gw_ip):
     """
     Собирает AWG конфиг с PostUp/PostDown.
-    v2: MASQUERADE убран из PostUp — теперь декларативно в /etc/nftables.d/10_nat.nft.
-    PostUp: MSS clamping, ip_forward, static VPN server route, fwmark rule, nftables reload.
+    MASQUERADE — декларативно в /etc/nftables.d/10_nat.nft.
     """
     m = re.search(r"Endpoint\s*=\s*(\S+)", raw_conf, re.IGNORECASE)
     endpoint = m.group(1) if m else ""
     vpn_ip   = endpoint.split(":")[0] if endpoint else ""
 
     parts_up = [
-        # MSS clamping — предотвращает фрагментацию через туннель
         "iptables -t mangle -A FORWARD -o awg0 -p tcp "
         "--tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu",
         "sysctl -w net.ipv4.ip_forward=1",
     ]
     if vpn_ip:
-        parts_up.append(f"ip route add {vpn_ip}/32 via {gw_ip} dev {iface}")
+        parts_up.append(f"ip route replace {vpn_ip}/32 via {gw_ip} dev {iface}")
     parts_up += [
-        "ip route add default dev awg0 table 100",
-        "ip rule add fwmark 0x1 table 100 priority 100",
-        # Загружаем/обновляем nftables (NAT, DNS-intercept, kill-switch)
+        "ip route replace default dev awg0 table 100",
+        "ip rule add fwmark 0x1 table 100 priority 100 2>/dev/null || true",
         f"nft -f {NFTABLES_CONF}",
     ]
 
     parts_down = [
         "iptables -t mangle -D FORWARD -o awg0 -p tcp "
-        "--tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null",
+        "--tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || true",
     ]
     if vpn_ip:
-        parts_down.append(
-            f"ip route del {vpn_ip}/32 via {gw_ip} dev {iface} 2>/dev/null"
-        )
+        parts_down.append(f"ip route del {vpn_ip}/32 via {gw_ip} dev {iface} 2>/dev/null || true")
     parts_down += [
-        "ip route del default dev awg0 table 100 2>/dev/null",
-        "ip rule del fwmark 0x1 table 100 priority 100 2>/dev/null",
+        "ip route del default dev awg0 table 100 2>/dev/null || true",
+        "ip rule del fwmark 0x1 table 100 priority 100 2>/dev/null || true",
     ]
 
     postup   = "; ".join(parts_up)
     postdown = "; ".join(parts_down)
 
+    # Срезаем все хуки wg-quick (PreUp/PostUp/PreDown/PostDown) — они eval'ятся
+    # как shell от root. Принимать их от пользователя нельзя: токен → root.
+    # Table/DNS/MTU перекрываются нами явно ниже.
     lines = [l for l in raw_conf.splitlines()
-             if not re.match(r"^\s*(PostUp|PostDown|Table|DNS)\s*=", l, re.IGNORECASE)]
+             if not re.match(r"^\s*(PreUp|PostUp|PreDown|PostDown|Table|DNS|MTU)\s*=",
+                             l, re.IGNORECASE)]
 
     result = []
     for line in lines:
         result.append(line)
         if line.strip() == "[Interface]":
             result.append("Table = off")
+            result.append("MTU = 1380")
     result.append(f"PostUp = {postup}")
     result.append(f"PostDown = {postdown}")
 
     return "\n".join(result) + "\n"
 
 @app.route("/api/awg/config", methods=["GET"])
+@require_auth
 def api_awg_config_get():
     nc = load_network_conf()
-    out, err, rc = run_cmd(["sudo", "-n", "/bin/cat", AWG_CONF_PATH])
+    out, _, rc = run_cmd(["sudo", "-n", "/bin/cat", AWG_CONF_PATH])
     if rc != 0 or not out:
         return jsonify({"ok": True, "config": "", "network": nc, "has_config": False})
     masked = re.sub(r"(PrivateKey\s*=\s*)\S+", r"\1<hidden>", out)
@@ -785,11 +694,9 @@ def api_awg_config_post():
         nc    = load_network_conf()
         iface = iface or nc.get("iface", "")
         gw_ip = gw_ip or nc.get("gw_ip", "")
-
     if not iface or not gw_ip:
         return jsonify({"ok": False, "error": "iface и gw_ip обязательны"}), 400
 
-    # Валидация — защита от shell/command injection
     if not validate_iface(iface):
         return jsonify({"ok": False, "error": "Недопустимое имя интерфейса"}), 400
     if not validate_ip(gw_ip):
@@ -801,35 +708,37 @@ def api_awg_config_post():
 
     conf = build_awg_conf(raw_conf, iface, gw_ip)
 
-    try:
-        proc = subprocess.run(
-            ["sudo", "-n", "/usr/local/bin/apply-awg-conf"],
-            input=conf, text=True,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10
-        )
-        if proc.returncode != 0:
-            return jsonify({"ok": False, "error": proc.stderr or "write failed"})
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)})
+    out, err, rc = run_cmd(["sudo", "-n", APPLY_AWG_BIN], input_str=conf, timeout=15)
+    if rc != 0:
+        return jsonify({"ok": False, "error": err or out or "write failed"})
 
     save_network_conf({"iface": iface, "gw_ip": gw_ip})
 
     out, err, rc = run_cmd(
-        ["sudo", "-n", "/usr/bin/systemctl", "restart", "awg-quick@awg0"],
-        timeout=15
+        ["sudo", "-n", "/usr/bin/systemctl", "restart", "awg-quick@awg0"], timeout=20
     )
     return jsonify({"ok": rc == 0, "output": out or err or "AWG перезапущен"})
 
-
-# ── Main ──────────────────────────────────────────────────────────────────────
+# ── Index + main ────────────────────────────────────────────────────────────
 
 @app.route("/")
 def index():
     return render_template("index.html")
 
 if __name__ == "__main__":
+    # Bind по умолчанию только на LAN-интерфейс — Web UI не должен быть
+    # доступен со стороны awg0 (VPN-сторона = недоверенный сегмент).
+    # Переопределяется WEBUI_BIND. Если привязки нет/невалидна — 127.0.0.1.
+    bind = os.environ.get("WEBUI_BIND", "")
+    if not bind:
+        try:
+            with open(NETWORK_CONF) as f:
+                bind = json.load(f).get("pi_ip", "127.0.0.1") or "127.0.0.1"
+        except Exception:
+            bind = "127.0.0.1"
     app.run(
-        host="0.0.0.0",
+        host=bind,
         port=int(os.environ.get("WEBUI_PORT", "8080")),
-        debug=False
+        debug=False,
+        threaded=True,
     )

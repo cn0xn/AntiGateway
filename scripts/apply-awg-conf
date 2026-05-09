@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# apply-awg-conf — пишет /etc/amnezia/amneziawg/awg0.conf из stdin
+# с валидацией и rollback на предыдущую версию.
+#
+# Запускается через sudo из Web UI. Поведение:
+#   1. stdin → tempfile рядом с целевым файлом
+#   2. Проверка `awg-quick strip` — отлавливает синтаксические ошибки
+#      и неподдерживаемые директивы.
+#   3. Бэкап текущего конфига → awg0.conf.bak
+#   4. Атомарный mv tempfile → awg0.conf, chmod 600
+#   5. На любой ошибке — tempfile удаляется, awg0.conf не трогаем.
+#
+# stdin: содержимое awg0.conf (готовое, с PostUp/PostDown — собирает app.py).
+set -euo pipefail
+
+DST="/etc/amnezia/amneziawg/awg0.conf"
+BAK="${DST}.bak"
+DIR=$(dirname "$DST")
+
+mkdir -p "$DIR"
+
+TMP=$(mktemp -p "$DIR" ".awg0.conf.XXXXXX")
+trap 'rm -f "$TMP"' EXIT
+
+cat > "$TMP"
+chmod 600 "$TMP"
+
+# Валидация — awg-quick strip парсит конфиг и выводит wg-совместимый формат
+if ! /usr/bin/awg-quick strip "$TMP" >/dev/null 2>&1; then
+  echo "awg-quick strip rejected the config" >&2
+  exit 1
+fi
+
+# Бэкап предыдущей версии (если есть) — позволяет откатиться вручную
+if [[ -f "$DST" ]]; then
+  cp -p "$DST" "$BAK"
+fi
+
+mv "$TMP" "$DST"
+trap - EXIT
+echo "ok"
