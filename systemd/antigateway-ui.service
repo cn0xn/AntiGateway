@@ -12,8 +12,9 @@ Environment=WEBUI_PORT=__PORT__
 Restart=on-failure
 RestartSec=5
 
-# Минимальный hardening — Web UI не должен писать никуда, кроме своих кэшей
-NoNewPrivileges=yes
+# Минимальный hardening. NoNewPrivileges и RestrictNamespaces намеренно НЕ
+# выставлены: sudo (который app.py гоняет для nft/awg/journalctl) требует
+# setuid и namespace-операций — иначе все sudo вызовы молча возвращают пусто.
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
@@ -21,7 +22,6 @@ ReadWritePaths=/etc/antigateway /var/cache/antigateway
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
-RestrictNamespaces=yes
 LockPersonality=yes
 RestrictRealtime=yes
 
