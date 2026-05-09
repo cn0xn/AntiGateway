@@ -1,0 +1,30 @@
+# 90_flowtable.nft — software flow offload для TCP/UDP сессий.
+#
+# Forwarded TCP/UDP сессии после первых нескольких пакетов попадают в
+# kernel fastpath, минуя forward chain. На Pi3 даёт +20-40% throughput
+# для bulk TCP (download/upload через VPN).
+#
+# ВАЖНО: этот файл НЕ включается в /etc/nftables.conf (имя 9*.nft —
+# render-nftables пропускает такие при include). Причина: flowtable
+# требует UP-интерфейс awg0 в момент `nft -f`, а основной /etc/nftables.conf
+# применяется до старта AWG. Этот файл применяется отдельно в PostUp
+# AWG, когда awg0 уже поднят.
+#
+# Безопасность kill-switch сохраняется: новые соединения по-прежнему
+# проходят полный forward chain (включая killswitch). Offload только
+# для уже установленных сессий, и при падении awg0 пакеты offloaded
+# сессий просто не уходят (link down), а не утекают в eth0.
+
+table inet flowtable_offload {
+    flowtable f {
+        hook ingress priority filter
+        devices = { __IFACE__, awg0 }
+    }
+
+    chain forward {
+        # priority filter + 20 — после killswitch (filter + 10), чтобы
+        # дропнутые пакеты не offload'ились
+        type filter hook forward priority filter + 20; policy accept;
+        ip protocol { tcp, udp } flow add @f
+    }
+}

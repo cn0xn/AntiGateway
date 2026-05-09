@@ -258,18 +258,21 @@ _write_awg_conf() {
   local awg_conf="/etc/amnezia/amneziawg/awg0.conf"
 
   # PostUp/PostDown: в [Interface], ip route replace (идемпотентно), без MASQUERADE (nftables)
+  # Flowtable применяется отдельно — требует UP awg0.
   local postup="iptables -t mangle -A FORWARD -o awg0 -p tcp --tcp-flags SYN,RST SYN \
 -j TCPMSS --clamp-mss-to-pmtu; \
 sysctl -w net.ipv4.ip_forward=1; \
 ip route replace ${VPN_SERVER_IP}/32 via ${GW_IP} dev ${IFACE}; \
 ip route replace default dev awg0 table 100; \
-ip rule add fwmark 0x1 table 100 priority 100 2>/dev/null || true"
+ip rule add fwmark 0x1 table 100 priority 100 2>/dev/null || true; \
+nft -f /etc/nftables.d/90_flowtable.nft 2>/dev/null || true"
 
   local postdown="iptables -t mangle -D FORWARD -o awg0 -p tcp --tcp-flags SYN,RST SYN \
 -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || true; \
 ip route del ${VPN_SERVER_IP}/32 via ${GW_IP} dev ${IFACE} 2>/dev/null || true; \
 ip route del default dev awg0 table 100 2>/dev/null || true; \
-ip rule del fwmark 0x1 table 100 priority 100 2>/dev/null || true"
+ip rule del fwmark 0x1 table 100 priority 100 2>/dev/null || true; \
+nft delete table inet flowtable_offload 2>/dev/null || true"
 
   # Срезаем все хуки wg-quick (PreUp/PostUp/PreDown/PostDown) и Table/DNS/MTU —
   # хуки eval'ятся как shell от root, остальное мы перекрываем явно ниже.

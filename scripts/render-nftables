@@ -67,13 +67,18 @@ def main():
         content = content.replace("__IFACE__", iface).replace("__PI_IP__", pi_ip)
         atomic_write(os.path.join(DST_DIR, name), content)
 
-    # Главный nftables.conf — явные include в нужном порядке
+    # Главный nftables.conf — явные include в нужном порядке.
+    # Файлы 9*.nft пропускаются — они применяются отдельно (например
+    # 90_flowtable.nft требует UP awg0, которого нет на момент main load).
+    deferred = [n for n in files if n[0] == "9"]
+    included = [n for n in files if n[0] != "9"]
     main_lines = ["#!/usr/sbin/nft -f", "flush ruleset"]
-    for name in files:
+    for name in included:
         main_lines.append(f'include "{DST_DIR}/{name}"')
     atomic_write(MAIN_CONF, "\n".join(main_lines) + "\n")
 
-    print(f"rendered {len(files)} nft files (iface={iface}, pi_ip={pi_ip})")
+    print(f"rendered {len(files)} nft files "
+          f"(iface={iface}, pi_ip={pi_ip}; deferred: {','.join(deferred) or 'none'})")
 
 if __name__ == "__main__":
     main()

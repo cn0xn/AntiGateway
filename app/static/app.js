@@ -96,7 +96,10 @@ function switchTab(name, btn) {
 
 function startAutoRefresh() {
   clearInterval(refreshTimer);
-  refreshTimer = setInterval(refreshStatus, 5000);
+  // 15с — backend кэш 5с покрывает 2-3 клиента, на Pi3 не плодим subprocess'ы.
+  // AWG handshake обновляется ~раз в минуту, RX/TX считаются за интервал —
+  // 15с достаточно для адекватного UX.
+  refreshTimer = setInterval(refreshStatus, 15000);
 }
 
 async function refreshStatus() {

@@ -192,7 +192,9 @@ def _security_headers(resp):
 # ── Кэш статуса ─────────────────────────────────────────────────────────────
 
 _status_cache = {"ts": 0.0, "data": None, "lock": threading.Lock()}
-STATUS_TTL = 3.0  # клиент опрашивает каждые 5с — 3с кэша исключают двойную работу
+# Клиент опрашивает каждые 15с (см. app.js). 5с кэш гарантирует свежие данные
+# при повторных запросах от 2-3 клиентов в окне, но не нагружает Pi3.
+STATUS_TTL = 5.0
 
 def _build_status():
     """Тяжёлая часть /api/status — 5+ subprocess'ов. Кэшируем."""
@@ -634,6 +636,9 @@ def build_awg_conf(raw_conf, iface, gw_ip):
         "ip route replace default dev awg0 table 100",
         "ip rule add fwmark 0x1 table 100 priority 100 2>/dev/null || true",
         f"nft -f {NFTABLES_CONF}",
+        # Flowtable требует UP awg0 — поэтому применяем отдельно после
+        # основного ruleset. || true — не валим AWG если файла нет/ошибка.
+        "nft -f /etc/nftables.d/90_flowtable.nft 2>/dev/null || true",
     ]
 
     parts_down = [
@@ -645,6 +650,8 @@ def build_awg_conf(raw_conf, iface, gw_ip):
     parts_down += [
         "ip route del default dev awg0 table 100 2>/dev/null || true",
         "ip rule del fwmark 0x1 table 100 priority 100 2>/dev/null || true",
+        # Сносим flowtable таблицу — иначе при следующем up получим конфликт
+        "nft delete table inet flowtable_offload 2>/dev/null || true",
     ]
 
     postup   = "; ".join(parts_up)
