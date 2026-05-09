@@ -178,6 +178,18 @@ systemctl restart dnsmasq && log "dnsmasq запущен ✓" || warn "dnsmasq �
 log "Перезапускаем zapret2..."
 systemctl restart zapret2-nfqws2 && log "zapret2 запущен ✓" || warn "zapret2 не запустился"
 
+# Software flow offload — применяется отдельно от main ruleset (требует UP awg0).
+# Идемпотентно: если awg0.conf ещё не обновлён с новым PostUp (после смены
+# через Web UI), deploy.sh всё равно поднимет flowtable.
+if [[ -f /etc/nftables.d/90_flowtable.nft ]]; then
+  log "Применяем flowtable..."
+  if nft -f /etc/nftables.d/90_flowtable.nft 2>/dev/null; then
+    log "flowtable активна ✓"
+  else
+    warn "flowtable не применилась (awg0 не готов?)"
+  fi
+fi
+
 log "Запускаем antigateway-ui..."
 systemctl restart antigateway-ui && log "antigateway-ui ✓" || warn "Web UI не перезапустился"
 
