@@ -54,6 +54,23 @@ fi
 # Чистим legacy /etc/dnsmasq.d/antizapret.conf (теперь покрывается update-lists)
 rm -f /etc/dnsmasq.d/antizapret.conf
 
+# Гарантируем права на auth.conf — иначе сервис под user не прочитает токен
+# и require_auth уйдёт в fail-closed (503 "auth not configured")
+WEB_USER=$(systemctl show -p User --value antigateway-ui 2>/dev/null \
+       || systemctl show -p User --value gateway-ui 2>/dev/null || true)
+WEB_USER="${WEB_USER:-${SUDO_USER:-user}}"
+if [[ -f "$ETC_DIR/auth.conf" ]]; then
+  chown "root:$WEB_USER" "$ETC_DIR/auth.conf"
+  chmod 0640 "$ETC_DIR/auth.conf"
+fi
+# lists-config.json пишется самим Web UI — должен быть его владельца
+if [[ -f "$ETC_DIR/lists-config.json" ]]; then
+  chown "$WEB_USER:$WEB_USER" "$ETC_DIR/lists-config.json"
+fi
+if [[ -f "$ETC_DIR/network.conf" ]]; then
+  chown "$WEB_USER:$WEB_USER" "$ETC_DIR/network.conf"
+fi
+
 # ── 2. Helper-скрипты в /usr/local/bin/ (root-owned, 0755) ─────────────────
 log "Обновляем helper-скрипты..."
 for s in update-lists update-routes.sh check-tunnel.sh \
@@ -67,11 +84,6 @@ done
 rm -f /usr/local/bin/update-antizapret.sh
 
 # ── 3. Sudoers (антигейтвей вместо legacy gateway-ui*) ─────────────────────
-# $WEB_USER берём из текущего unit-файла (legacy gateway-ui или нового). Это
-# даёт идемпотентность без необходимости интерактивного ввода.
-WEB_USER=$(systemctl show -p User --value antigateway-ui 2>/dev/null \
-       || systemctl show -p User --value gateway-ui 2>/dev/null || true)
-WEB_USER="${WEB_USER:-user}"
 log "Web UI пользователь: $WEB_USER"
 
 log "Устанавливаем /etc/sudoers.d/antigateway..."
