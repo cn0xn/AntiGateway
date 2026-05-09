@@ -163,11 +163,17 @@ IFACE=$(python3 -c "import json; print(json.load(open('$NETWORK_CONF'))['iface']
 sed "s/__IFACE__/${IFACE}/g" "$INSTALL_DIR/config/dnsmasq-main.conf" > /etc/dnsmasq.d/main.conf
 
 # ── 7. Перезапускаем сервисы ──────────────────────────────────────────────
-log "Перезапускаем dnsmasq..."
-systemctl restart dnsmasq && log "dnsmasq запущен ✓" || warn "dnsmasq не запустился"
-
+# AWG поднимаем ПЕРВЫМ — иначе dnsmasq не сможет забиндить upstream socket
+# на awg0 (server=1.1.1.1@awg0 в main.conf, SO_BINDTODEVICE требует
+# существующий интерфейс в момент бинда).
 log "Перезапускаем AWG..."
 systemctl restart awg-quick@awg0 && log "AWG поднят ✓" || warn "AWG не запустился"
+
+# Даём ядру 1с на регистрацию интерфейса
+sleep 1
+
+log "Перезапускаем dnsmasq..."
+systemctl restart dnsmasq && log "dnsmasq запущен ✓" || warn "dnsmasq не запустился"
 
 log "Перезапускаем zapret2..."
 systemctl restart zapret2-nfqws2 && log "zapret2 запущен ✓" || warn "zapret2 не запустился"
