@@ -91,12 +91,31 @@ def download(list_id, url):
         return None
 
 def parse_domains(text):
+    """
+    Поддерживает два формата:
+    - plain: `foo.com` — старые источники itdoginfo, inline-списки
+    - v2ray-style: `domain:foo.com`, `full:bar.foo.com` — runetfreedom.
+      Префикс не влияет на nftset matching: dnsmasq всё равно матчит
+      домен и его поддомены. Префиксы `keyword:` / `regex:` игнорируем —
+      у dnsmasq нет эквивалента (можно было бы эмулировать regex через
+      `address=/.../`, но для blocked-set это перебор).
+    """
     domains = []
     for line in text.splitlines():
-        line = line.strip().lstrip(".")
+        line = line.strip()
         if not line or line.startswith("#"):
             continue
-        domains.append(line)
+        if ":" in line:
+            prefix, _, value = line.partition(":")
+            if prefix.strip().lower() in ("domain", "full"):
+                d = value.strip().lstrip(".")
+                if d:
+                    domains.append(d)
+            continue
+        # Plain (legacy / inline)
+        d = line.lstrip(".")
+        if d:
+            domains.append(d)
     return domains
 
 def read_cached(list_id):

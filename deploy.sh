@@ -75,13 +75,21 @@ fi
 log "Обновляем helper-скрипты..."
 for s in update-lists update-routes.sh check-tunnel.sh \
          apply-awg-conf apply-dns-records apply-dns-hosts \
-         render-nftables antigateway-reset; do
+         render-nftables antigateway-reset \
+         migrate-lists-runetfreedom; do
   if [[ -f "$INSTALL_DIR/scripts/$s" ]]; then
     install -m 0755 -o root -g root "$INSTALL_DIR/scripts/$s" /usr/local/bin/
   fi
 done
 # Удаляем legacy скрипт
 rm -f /usr/local/bin/update-antizapret.sh
+
+# Одноразовая миграция lists-config.json на runetfreedom (идемпотентно).
+# Скрипт сам проверит — уже мигрировано? — и пропустит.
+if [[ -x /usr/local/bin/migrate-lists-runetfreedom ]]; then
+  log "Проверяем миграцию списков на runetfreedom..."
+  /usr/local/bin/migrate-lists-runetfreedom || warn "migrate-lists вернул ошибку"
+fi
 
 # ── 3. Sudoers (антигейтвей вместо legacy gateway-ui*) ─────────────────────
 log "Web UI пользователь: $WEB_USER"
@@ -192,6 +200,18 @@ fi
 
 log "Запускаем antigateway-ui..."
 systemctl restart antigateway-ui && log "antigateway-ui ✓" || warn "Web UI не перезапустился"
+
+# Если только что мигрировали на runetfreedom — нужно скачать новые списки.
+# Запускаем update-lists --force в фоне, чтобы не блокировать deploy.
+# Признак что миграция произошла: ru_blocked есть в lists-config с runetfreedom URL,
+# а кэш ru_blocked.lst в /var/cache/antigateway/lists/ ещё не существует.
+if [[ -f /etc/antigateway/lists-config.json ]] \
+   && grep -q runetfreedom /etc/antigateway/lists-config.json 2>/dev/null \
+   && [[ ! -f /var/cache/antigateway/lists/ru_blocked.lst ]]; then
+  log "Скачиваем новые списки от runetfreedom (в фоне)..."
+  nohup /usr/local/bin/update-lists --force \
+    >> /var/log/antigateway-update-lists.log 2>&1 &
+fi
 
 # ── 8. Health check ────────────────────────────────────────────────────────
 sleep 2

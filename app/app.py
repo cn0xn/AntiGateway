@@ -248,10 +248,9 @@ def _build_status():
         "routing": {
             "youtube":  list_mode("svc_youtube"),
             "discord":  list_mode("svc_discord"),
-            "tiktok":   list_mode("svc_tiktok"),
-            "telegram": list_mode("svc_telegram"),
-            "meta":     list_mode("svc_meta"),
+            "google":   list_mode("svc_google"),
             "claude":   list_mode("svc_claude"),
+            "kinopub":  list_mode("svc_kinopub"),
         },
         "nftables": nft_tables,
         "stats": {

@@ -1,0 +1,202 @@
+#!/usr/bin/env python3
+"""
+migrate-lists-runetfreedom — одноразовая миграция /etc/antigateway/lists-config.json
+с источника itdoginfo/allow-domains на runetfreedom/russia-blocked-geosite.
+
+Поведение:
+- Идемпотентно. Запускайте сколько угодно раз — повторный запуск ничего не меняет.
+- Сохраняет user-modified `mode` и `enabled` для известных id (миграция URL,
+  не сброс выбора пользователя).
+- Переименовывает `russia_inside` → `ru_blocked` (унификация с runetfreedom),
+  с сохранением mode/enabled.
+- Удаляет legacy `svc_telegram`, `svc_meta`, `svc_tiktok`, `svc_twitter`,
+  `svc_cloudflare`, `svc_google_play`, `svc_google_meet`, `svc_hdrezka`,
+  `svc_roblox`, `svc_google_ai`, `cat_*`, `russia_outside` — их нет в
+  runetfreedom как отдельных списков (покрываются ru_blocked).
+- Сохраняет inline-списки (`domains: [...]`, без url) — это пользовательские
+  кастомные категории типа `svc_claude`, `svc_kinopub`.
+- Добавляет новые id (`ru_blocked_all`, `svc_google`) с mode=disabled,
+  чтобы пользователь сам включил при необходимости.
+- Запускается ПОД РУТОМ (пишет в /etc/antigateway/), но владельца файла
+  меняет обратно на $SUDO_USER:$SUDO_USER чтобы Web UI мог писать.
+"""
+import json
+import os
+import sys
+import shutil
+import tempfile
+import time
+
+CONFIG_FILE = "/etc/antigateway/lists-config.json"
+
+# id → (name, description, url, category, default_mode)
+NEW_LISTS = {
+    "ru_blocked": (
+        "Россия — заблокированные домены",
+        "Базовый список (~75k) — runetfreedom, обновляется каждые 6ч",
+        "https://raw.githubusercontent.com/runetfreedom/russia-blocked-geosite/release/ru-blocked.txt",
+        "Russia", "tunnel"
+    ),
+    "ru_blocked_all": (
+        "Россия — всё заблокированное (агрегированный)",
+        "Объединение источников (~700k+). Тяжёлый список — включай если ru_blocked не покрывает",
+        "https://raw.githubusercontent.com/runetfreedom/russia-blocked-geosite/release/ru-blocked-all.txt",
+        "Russia", "disabled"
+    ),
+    "svc_youtube": (
+        "YouTube",
+        "YouTube и Google Video CDN — runetfreedom",
+        "https://raw.githubusercontent.com/runetfreedom/russia-blocked-geosite/release/youtube.txt",
+        "Services", "tunnel"
+    ),
+    "svc_discord": (
+        "Discord",
+        "Discord голос/чат/CDN — runetfreedom",
+        "https://raw.githubusercontent.com/runetfreedom/russia-blocked-geosite/release/discord.txt",
+        "Services", "tunnel"
+    ),
+    "svc_google": (
+        "Google",
+        "Google и Google services — runetfreedom",
+        "https://raw.githubusercontent.com/runetfreedom/russia-blocked-geosite/release/google.txt",
+        "Services", "disabled"
+    ),
+}
+
+# id → новый id (renaming)
+RENAMES = {
+    "russia_inside": "ru_blocked",
+}
+
+# id'ы, которые удаляются (покрываются ru_blocked)
+DROP_IDS = {
+    "russia_outside",
+    "svc_telegram", "svc_meta", "svc_tiktok", "svc_twitter",
+    "svc_cloudflare", "svc_google_play", "svc_google_meet",
+    "svc_hdrezka", "svc_roblox", "svc_google_ai",
+    "cat_geoblock", "cat_news", "cat_anime", "cat_hodca",
+}
+
+def is_inline(lst):
+    """Inline-список = пользовательский, у него нет url, есть domains[]."""
+    return not lst.get("url") and isinstance(lst.get("domains"), list)
+
+def main():
+    if not os.path.exists(CONFIG_FILE):
+        print(f"{CONFIG_FILE} не найден — пропускаем миграцию (свежая установка возьмёт template из репо)")
+        return 0
+
+    with open(CONFIG_FILE) as f:
+        cfg = json.load(f)
+
+    lists = cfg.get("lists", {})
+    if not lists:
+        print("lists пуст — нечего мигрировать")
+        return 0
+
+    # Уже мигрировано? Проверяем по наличию ru_blocked с runetfreedom URL.
+    already = lists.get("ru_blocked", {})
+    if "runetfreedom" in already.get("url", ""):
+        print("уже мигрировано — пропускаем")
+        return 0
+
+    print(f"миграция {CONFIG_FILE} на runetfreedom...")
+
+    # Бэкап
+    bak = f"{CONFIG_FILE}.bak.{time.strftime('%Y%m%d-%H%M%S')}"
+    shutil.copy2(CONFIG_FILE, bak)
+    print(f"  бэкап: {bak}")
+
+    new_lists = {}
+
+    # 1. Inline-списки сохраняем как есть
+    for lid, lst in lists.items():
+        if is_inline(lst):
+            new_lists[lid] = lst
+            print(f"  inline сохранён: {lid}")
+
+    # 2. Renaming с сохранением mode/enabled
+    for old_id, new_id in RENAMES.items():
+        if old_id in lists and new_id in NEW_LISTS:
+            old = lists[old_id]
+            name, desc, url, cat, default_mode = NEW_LISTS[new_id]
+            new_lists[new_id] = {
+                "id": new_id,
+                "name": name,
+                "description": desc,
+                "url": url,
+                "category": cat,
+                "mode": old.get("mode", default_mode),
+                "enabled": old.get("enabled", True),
+                "domain_count": 0,  # обновится при следующем update-lists
+            }
+            print(f"  переименован: {old_id} → {new_id} (mode={new_lists[new_id]['mode']})")
+
+    # 3. URL-replace для id, которые остаются с тем же именем (svc_youtube, svc_discord)
+    for lid, (name, desc, url, cat, default_mode) in NEW_LISTS.items():
+        if lid in new_lists:
+            continue  # уже добавили через renaming
+        if lid in lists and not is_inline(lists[lid]):
+            old = lists[lid]
+            new_lists[lid] = {
+                "id": lid,
+                "name": name,
+                "description": desc,
+                "url": url,
+                "category": cat,
+                "mode": old.get("mode", default_mode),
+                "enabled": old.get("enabled", True),
+                "domain_count": 0,
+            }
+            print(f"  URL обновлён: {lid} → runetfreedom (mode={new_lists[lid]['mode']})")
+        else:
+            # Нет в старом конфиге — добавляем с дефолтным mode
+            new_lists[lid] = {
+                "id": lid,
+                "name": name,
+                "description": desc,
+                "url": url,
+                "category": cat,
+                "mode": default_mode,
+                "enabled": default_mode != "disabled",
+                "domain_count": 0,
+            }
+            print(f"  добавлен новый: {lid} (mode={default_mode})")
+
+    # 4. Удалённые id — отчитываемся
+    dropped = [lid for lid in lists if lid in DROP_IDS]
+    if dropped:
+        print(f"  удалены legacy id (покрываются ru_blocked): {', '.join(dropped)}")
+
+    # Атомарная запись
+    cfg["lists"] = new_lists
+    cfg["last_sync"] = None  # сбрасываем чтобы update-lists скачал заново
+    fd, tmp = tempfile.mkstemp(prefix=".lists-config.", dir=os.path.dirname(CONFIG_FILE))
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(cfg, f, indent=2, ensure_ascii=False)
+            f.flush(); os.fsync(f.fileno())
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, CONFIG_FILE)
+    except Exception:
+        try: os.unlink(tmp)
+        except FileNotFoundError: pass
+        raise
+
+    # Возвращаем владельца Web UI пользователю (который запускает app.py)
+    sudo_user = os.environ.get("SUDO_USER")
+    if sudo_user:
+        try:
+            import pwd
+            uid = pwd.getpwnam(sudo_user).pw_uid
+            gid = pwd.getpwnam(sudo_user).pw_gid
+            os.chown(CONFIG_FILE, uid, gid)
+        except KeyError:
+            pass
+
+    print(f"  → {CONFIG_FILE} мигрирован ({len(new_lists)} списков)")
+    print(f"  следующий шаг: запустите `sudo /usr/local/bin/update-lists --force` чтобы скачать новые списки")
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())
