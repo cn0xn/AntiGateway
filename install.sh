@@ -442,10 +442,11 @@ EOF
   cat > /etc/cron.d/antigateway-update-routes << 'EOF'
 0 4 * * * root /usr/local/bin/update-routes.sh >> /var/log/antigateway-update-routes.log 2>&1
 EOF
-  # update-lists обновляет все включённые в lists-config.json списки доменов
-  # (включая russia_inside, который раньше тянулся отдельным update-antizapret).
+  # update-lists обновляет все включённые в lists-config.json списки доменов.
+  # Запускаем каждые 6 часов синхронно с runetfreedom upstream (он апдейтится
+  # каждые 6ч). +5 минут смещение чтобы не попадать в кратные часы (нагрузка GH).
   cat > /etc/cron.d/antigateway-update-lists << 'EOF'
-30 4 * * * root /usr/local/bin/update-lists >> /var/log/antigateway-update-lists.log 2>&1
+5 */6 * * * root /usr/local/bin/update-lists >> /var/log/antigateway-update-lists.log 2>&1
 EOF
 
   # logrotate — иначе watchdog/update-* пишут логи бесконечно

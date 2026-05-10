@@ -16,7 +16,7 @@ DNSMASQ_DIR      = "/etc/dnsmasq.d"
 TUNNEL_CONF      = f"{DNSMASQ_DIR}/lists-tunnel.conf"
 ZAPRET_CONF      = f"{DNSMASQ_DIR}/lists-zapret.conf"
 ZAPRET_HOSTLIST  = "/opt/zapret2/ipset/zapret-hosts-user.txt"
-CACHE_TTL        = 86400  # 24 hours
+CACHE_TTL        = 21600  # 6 часов — синхронно с runetfreedom upstream (он апдейтится каждые 6ч)
 
 # Статические IP-диапазоны для туннеля (hardcoded, не резолвятся через DNS)
 STATIC_TUNNEL_SUBNETS = [

@@ -145,7 +145,7 @@ cat > /etc/cron.d/antigateway-update-routes << 'EOF'
 0 4 * * * root /usr/local/bin/update-routes.sh >> /var/log/antigateway-update-routes.log 2>&1
 EOF
 cat > /etc/cron.d/antigateway-update-lists << 'EOF'
-30 4 * * * root /usr/local/bin/update-lists >> /var/log/antigateway-update-lists.log 2>&1
+5 */6 * * * root /usr/local/bin/update-lists >> /var/log/antigateway-update-lists.log 2>&1
 EOF
 rm -f /etc/cron.d/antigateway-update-antizapret /etc/cron.d/gateway-ui-watchdog \
       /etc/cron.d/gateway-update-routes /etc/cron.d/gateway-update-antizapret
