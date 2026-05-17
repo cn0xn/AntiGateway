@@ -335,6 +335,11 @@ ExecStartPre=
 ExecStartPost=
 EOF
 
+  # Привязка к awg-quick@awg0 — dnsmasq рестартится при пересоздании awg0
+  # (иначе server=1.1.1.1@awg0 ломается: "Cannot assign requested address")
+  install -m 0644 "$INSTALL_DIR/systemd/dnsmasq-awg-bind.conf" \
+    /etc/systemd/system/dnsmasq.service.d/10-awg-bind.conf
+
   systemctl daemon-reload
   systemctl enable  dnsmasq >> "$LOG" 2>&1
   systemctl restart dnsmasq >> "$LOG" 2>&1 || warn "dnsmasq не запустился"

@@ -23,6 +23,11 @@ log_msg() { echo "[$(date '+%F %T')] $*" >> "$LOGFILE"; }
 restart_awg() {
     log_msg "$1 — restarting awg-quick@awg0"
     systemctl restart awg-quick@awg0 2>>"$LOGFILE" || true
+    # dnsmasq держит upstream-сокет привязанным к awg0 (server=1.1.1.1@awg0).
+    # После пересоздания awg0 привязка мертва → DNS REFUSED. Рестартим dnsmasq.
+    # (systemd PartOf обычно делает это сам, но если awg0 пересоздан без
+    #  рестарта unit — это страховка.)
+    systemctl restart dnsmasq 2>>"$LOGFILE" || true
 }
 
 # 1. fwmark rule

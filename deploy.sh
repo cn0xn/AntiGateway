@@ -122,6 +122,12 @@ mkdir -p /etc/systemd/system/awg-quick@awg0.service.d
 install -m 0644 "$INSTALL_DIR/systemd/awg-quick-override.conf" \
   /etc/systemd/system/awg-quick@awg0.service.d/override.conf
 
+# dnsmasq привязка к awg-quick@awg0 (рестарт при пересоздании awg0).
+# Отдельный drop-in — не трогает основной override.conf с ExecStart-фиксом.
+mkdir -p /etc/systemd/system/dnsmasq.service.d
+install -m 0644 "$INSTALL_DIR/systemd/dnsmasq-awg-bind.conf" \
+  /etc/systemd/system/dnsmasq.service.d/10-awg-bind.conf
+
 systemctl daemon-reload
 
 # Останавливаем legacy gateway-ui.service, если он ещё активен
