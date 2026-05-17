@@ -12,13 +12,20 @@ Environment=WEBUI_PORT=__PORT__
 Restart=on-failure
 RestartSec=5
 
-# Минимальный hardening. NoNewPrivileges и RestrictNamespaces намеренно НЕ
-# выставлены: sudo (который app.py гоняет для nft/awg/journalctl) требует
-# setuid и namespace-операций — иначе все sudo вызовы молча возвращают пусто.
+# Минимальный hardening. ВАЖНО про ProtectSystem:
+# - NoNewPrivileges/RestrictNamespaces НЕ ставим — sudo требует setuid и
+#   namespace-операций, иначе sudo-вызовы молча пустые.
+# - ProtectSystem=true (НЕ strict): sudo НЕ выходит из mount-namespace
+#   сервиса, поэтому helper-скрипты (update-lists, render-nftables,
+#   apply-awg-conf, antigateway-reset), запущенные через `sudo` из app.py,
+#   наследуют этот namespace. При strict /etc/dnsmasq.d, /etc/nftables.d,
+#   /etc/amnezia, /opt/zapret2 были read-only → helper'ы падали с
+#   "Read-only file system". true делает RO только /usr и /boot — app.py
+#   туда не пишет, а helper'ам /etc и /opt остаются writable.
+#   ReadWritePaths при true не нужен.
 PrivateTmp=yes
-ProtectSystem=strict
+ProtectSystem=true
 ProtectHome=yes
-ReadWritePaths=/etc/antigateway /var/cache/antigateway
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
