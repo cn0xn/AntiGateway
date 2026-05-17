@@ -70,12 +70,22 @@ def main():
         r = subprocess.run(["nft", "-f", nft_tmp], capture_output=True, timeout=10)
         if r.returncode != 0:
             # Сет может не существовать если nftables ещё не загружен —
-            # не фатально, render-nftables подхватит из файла при restart.
+            # не фатально, render-nftables ниже впишет в файл на диск.
             err = r.stderr.decode(errors="replace").strip()
-            print(f"warn: nft hot-update failed ({err}); "
-                  f"файл записан, применится при restart nftables", file=sys.stderr)
+            print(f"warn: nft hot-update failed ({err})", file=sys.stderr)
     finally:
         os.unlink(nft_tmp)
+
+    # 3. Ре-рендер /etc/nftables.d/ из свежего tunnel-devices.json — иначе
+    #    set device_tunnel опустеет при следующем `restart nftables`
+    #    (горячий апдейт живёт только в runtime). render-nftables НЕ делает
+    #    restart — просто синхронизирует файлы на диск, runtime не трогает.
+    rn = subprocess.run(["/usr/local/bin/render-nftables"],
+                         capture_output=True, timeout=20)
+    if rn.returncode != 0:
+        err = rn.stderr.decode(errors="replace").strip()
+        print(f"warn: render-nftables failed ({err}); устройство в runtime "
+              f"есть, но не переживёт restart nftables", file=sys.stderr)
 
     print(f"ok: {len(ips)} устройств в device_tunnel")
 
