@@ -8,6 +8,15 @@ table ip tunnel_routing {
         type ipv4_addr
         flags interval
     }
+    # Устройства, чей ВЕСЬ трафик идёт через VPN (per-device routing,
+    # без доменных списков). Управляется через Web UI. Элементы
+    # инлайнятся render-nftables из /etc/antigateway/tunnel-devices.json,
+    # чтобы пережить restart nftables.
+    set device_tunnel {
+        type ipv4_addr
+        flags interval
+__DEVICE_TUNNEL_ELEMENTS__
+    }
     set doh_servers {
         type ipv4_addr
         flags interval
@@ -22,6 +31,8 @@ table ip tunnel_routing {
     }
     chain preroute_mark {
         type filter hook prerouting priority mangle; policy accept;
+        # Per-device: весь трафик устройства из device_tunnel → VPN
+        ip saddr @device_tunnel meta mark set 0x00000001
         ip daddr @blocked_ips meta mark set 0x00000001
     }
     chain forward_zapret {

@@ -75,7 +75,7 @@ fi
 log "Обновляем helper-скрипты..."
 for s in update-lists update-routes.sh check-tunnel.sh \
          apply-awg-conf apply-dns-records apply-dns-hosts \
-         render-nftables antigateway-reset \
+         apply-tunnel-devices render-nftables antigateway-reset \
          migrate-lists-runetfreedom; do
   if [[ -f "$INSTALL_DIR/scripts/$s" ]]; then
     install -m 0755 -o root -g root "$INSTALL_DIR/scripts/$s" /usr/local/bin/

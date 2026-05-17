@@ -31,11 +31,13 @@ CONFIG_FILE      = f"{ETC_DIR}/lists-config.json"
 NETWORK_CONF     = f"{ETC_DIR}/network.conf"
 AUTH_CONF        = f"{ETC_DIR}/auth.conf"
 DNS_RECORDS_FILE = f"{ETC_DIR}/dns-records.json"
+TUNNEL_DEV_FILE  = f"{ETC_DIR}/tunnel-devices.json"
 AWG_CONF_PATH    = "/etc/amnezia/amneziawg/awg0.conf"
 NFTABLES_CONF    = "/etc/nftables.conf"
 
 # Helper-скрипты (см. sudoers.template)
 APPLY_AWG_BIN     = "/usr/local/bin/apply-awg-conf"
+APPLY_TUNNEL_DEV_BIN = "/usr/local/bin/apply-tunnel-devices"
 APPLY_DNS_REC_BIN = "/usr/local/bin/apply-dns-records"
 APPLY_DNS_HST_BIN = "/usr/local/bin/apply-dns-hosts"
 RESET_BIN         = "/usr/local/bin/antigateway-reset"
@@ -132,6 +134,15 @@ def load_cfg():
 
 def save_cfg(cfg):
     atomic_write_json(CONFIG_FILE, cfg)
+
+def load_tunnel_devices():
+    """Список устройств, чей весь трафик идёт через VPN (per-device routing)."""
+    try:
+        with open(TUNNEL_DEV_FILE) as f:
+            data = json.load(f)
+            return data if isinstance(data, list) else []
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
 
 # ── Auth ─────────────────────────────────────────────────────────────────────
 
@@ -257,6 +268,7 @@ def _build_status():
             "blocked_ips": nft_set_count("blocked_ips"),
             "zapret_ips":  nft_set_count("zapret_ips"),
         },
+        "tunnel_devices": len(load_tunnel_devices()),
         "ts": datetime.now().strftime("%H:%M:%S"),
     }
 
@@ -493,6 +505,50 @@ def api_dns_update(name):
         return jsonify({"ok": False, "error": "Запись не найдена"}), 404
     ok, err = write_dns_records_via_helper(records)
     return jsonify({"ok": ok, "error": err, "records": records if ok else None})
+
+# ── Tunnel devices (per-device VPN routing) ────────────────────────────────
+
+def write_tunnel_devices_via_helper(devices):
+    payload = json.dumps(devices, ensure_ascii=False)
+    out, err, rc = run_cmd(["sudo", "-n", APPLY_TUNNEL_DEV_BIN],
+                           input_str=payload, timeout=15)
+    if rc != 0:
+        return False, err or out or "apply-tunnel-devices failed"
+    return True, None
+
+@app.route("/api/devices")
+@require_auth
+def api_devices_list():
+    return jsonify({"devices": load_tunnel_devices()})
+
+@app.route("/api/devices", methods=["POST"])
+@require_auth
+def api_devices_add():
+    data = request.json or {}
+    ip   = data.get("ip", "").strip()
+    name = sanitize_comment(data.get("name", ""))
+    if not validate_ip(ip):
+        return jsonify({"ok": False, "error": "Недопустимый IPv4 адрес"}), 400
+
+    devices = load_tunnel_devices()
+    if any(d.get("ip") == ip for d in devices):
+        return jsonify({"ok": False, "error": f"{ip} уже в списке"}), 409
+    devices.append({"ip": ip, "name": name})
+    ok, err = write_tunnel_devices_via_helper(devices)
+    return jsonify({"ok": ok, "error": err, "devices": devices if ok else None})
+
+@app.route("/api/devices/<ip>", methods=["DELETE"])
+@require_auth
+def api_devices_delete(ip):
+    ip = ip.strip()
+    if not validate_ip(ip):
+        return jsonify({"ok": False, "error": "Недопустимый IPv4 адрес"}), 400
+    devices = load_tunnel_devices()
+    new_devices = [d for d in devices if d.get("ip") != ip]
+    if len(new_devices) == len(devices):
+        return jsonify({"ok": False, "error": "Устройство не найдено"}), 404
+    ok, err = write_tunnel_devices_via_helper(new_devices)
+    return jsonify({"ok": ok, "error": err, "devices": new_devices if ok else None})
 
 # ── Logs ─────────────────────────────────────────────────────────────────────
 

@@ -75,6 +75,7 @@ document.addEventListener("DOMContentLoaded", () => {
   if (!getToken()) showAuthModal();
   refreshStatus();
   refreshLogs();
+  loadDevices();
   startAutoRefresh();
 });
 
@@ -177,6 +178,77 @@ async function serviceAction(name, action) {
   } catch (e) {
     if (e.message !== "Unauthorized")
       showToast("Сетевая ошибка: " + e.message, "error");
+  }
+}
+
+/* ── Tunnel devices (весь трафик устройства через VPN) ─────────── */
+async function loadDevices() {
+  const list = document.getElementById("devList");
+  if (!list) return;
+  try {
+    const res  = await fetch("/api/devices", {
+      headers: getToken() ? {"X-Auth-Token": getToken()} : {},
+    });
+    if (res.status === 401) { renderDevices([]); return; }
+    const data = await res.json();
+    renderDevices(data.devices || []);
+  } catch {
+    list.innerHTML = `<div class="dev-empty">Ошибка загрузки</div>`;
+  }
+}
+
+function renderDevices(devices) {
+  const list  = document.getElementById("devList");
+  const count = document.getElementById("devCount");
+  if (count) count.textContent = devices.length ? `${devices.length} устр.` : "нет";
+  if (!list) return;
+  if (!devices.length) {
+    list.innerHTML = `<div class="dev-empty">Нет устройств — добавьте IP ниже</div>`;
+    return;
+  }
+  list.innerHTML = devices.map(d => `
+    <div class="dev-row">
+      <span class="dev-ip">${escHtml(d.ip)}</span>
+      <span class="dev-name">${escHtml(d.name || "")}</span>
+      <button class="btn btn-danger btn-sm" onclick="deviceDelete('${escHtml(d.ip)}')">✕</button>
+    </div>
+  `).join("");
+}
+
+async function deviceAdd() {
+  const ipEl   = document.getElementById("dev-ip");
+  const nameEl = document.getElementById("dev-name");
+  const errEl  = document.getElementById("devError");
+  const ip   = ipEl.value.trim();
+  const name = nameEl.value.trim();
+  errEl.textContent = "";
+  if (!ip) { errEl.textContent = "Укажите IP"; return; }
+  try {
+    const res  = await apiFetch("/api/devices", {
+      method:  "POST",
+      headers: {"Content-Type": "application/json"},
+      body:    JSON.stringify({ip, name}),
+    });
+    const data = await res.json();
+    if (!data.ok) { errEl.textContent = data.error || "Ошибка"; return; }
+    ipEl.value = ""; nameEl.value = "";
+    renderDevices(data.devices);
+    showToast(`${ip} → весь трафик через VPN ✓`, "success");
+  } catch (e) {
+    if (e.message !== "Unauthorized") errEl.textContent = e.message;
+  }
+}
+
+async function deviceDelete(ip) {
+  if (!confirm(`Убрать ${ip} из VPN-маршрутизации?`)) return;
+  try {
+    const res  = await apiFetch(`/api/devices/${encodeURIComponent(ip)}`, {method: "DELETE"});
+    const data = await res.json();
+    if (!data.ok) { showToast("Ошибка: " + data.error, "error"); return; }
+    renderDevices(data.devices);
+    showToast(`${ip} убран`, "success");
+  } catch (e) {
+    if (e.message !== "Unauthorized") showToast("Ошибка: " + e.message, "error");
   }
 }
 

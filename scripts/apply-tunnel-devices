@@ -1,0 +1,83 @@
+#!/usr/bin/env python3
+"""
+apply-tunnel-devices — атомарная запись /etc/antigateway/tunnel-devices.json
+из stdin + горячее обновление nft set device_tunnel (без restart nftables).
+
+Список устройств, чей ВЕСЬ трафик заворачивается в VPN (per-device routing
+по source-IP). Используется Web UI (карточка AmneziaWG на дашборде).
+
+stdin: JSON-массив [{"ip": "192.168.1.238", "name": "Samsung TV"}, ...].
+
+Запускается через sudo. sudoers даёт NOPASSWD только этому скрипту.
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+
+DEST    = "/etc/antigateway/tunnel-devices.json"
+NFT_TBL = "tunnel_routing"
+NFT_SET = "device_tunnel"
+IPV4_RE = re.compile(r'^\d{1,3}(\.\d{1,3}){3}(/\d{1,2})?$')
+
+def main():
+    try:
+        data = json.loads(sys.stdin.read())
+    except json.JSONDecodeError as e:
+        print(f"invalid JSON: {e}", file=sys.stderr); sys.exit(1)
+    if not isinstance(data, list):
+        print("expected JSON array", file=sys.stderr); sys.exit(1)
+
+    clean = []
+    ips = []
+    for i, rec in enumerate(data):
+        if not isinstance(rec, dict):
+            print(f"record {i}: not an object", file=sys.stderr); sys.exit(1)
+        ip = str(rec.get("ip", "")).strip()
+        if not IPV4_RE.match(ip):
+            print(f"record {i}: invalid ipv4 {ip!r}", file=sys.stderr); sys.exit(1)
+        name = re.sub(r'[\x00-\x1f\x7f]', ' ', str(rec.get("name", ""))).strip()[:60]
+        clean.append({"ip": ip, "name": name})
+        ips.append(ip)
+
+    # 1. Атомарная запись файла (его читает render-nftables при restart nftables)
+    os.makedirs(os.path.dirname(DEST), exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".tunnel-devices.", dir=os.path.dirname(DEST))
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(clean, f, indent=2, ensure_ascii=False)
+            f.flush(); os.fsync(f.fileno())
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, DEST)
+    except Exception:
+        try: os.unlink(tmp)
+        except FileNotFoundError: pass
+        raise
+
+    # 2. Горячее обновление nft set одной транзакцией (flush + add) —
+    #    без restart nftables, нет окна без маршрутизации.
+    lines = [f"flush set ip {NFT_TBL} {NFT_SET}"]
+    if ips:
+        lines.append(f"add element ip {NFT_TBL} {NFT_SET} {{ {', '.join(ips)} }}")
+    nft_doc = "\n".join(lines) + "\n"
+
+    fd, nft_tmp = tempfile.mkstemp(prefix="tunnel-devices-", suffix=".nft", dir="/tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(nft_doc)
+        r = subprocess.run(["nft", "-f", nft_tmp], capture_output=True, timeout=10)
+        if r.returncode != 0:
+            # Сет может не существовать если nftables ещё не загружен —
+            # не фатально, render-nftables подхватит из файла при restart.
+            err = r.stderr.decode(errors="replace").strip()
+            print(f"warn: nft hot-update failed ({err}); "
+                  f"файл записан, применится при restart nftables", file=sys.stderr)
+    finally:
+        os.unlink(nft_tmp)
+
+    print(f"ok: {len(ips)} устройств в device_tunnel")
+
+if __name__ == "__main__":
+    main()

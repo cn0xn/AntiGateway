@@ -418,3 +418,28 @@ body {
 .dns-ip   { color: var(--text); font-family: var(--mono); font-size: 13px; }
 .dns-comment { color: var(--text2); font-size: 12px; }
 .dns-actions { text-align: right; white-space: nowrap; width: 80px; }
+
+/* ── AWG card: per-device VPN routing ──────────────────────────── */
+.awg-devices {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.awg-devices-head {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 12px; color: var(--text2); margin-bottom: 8px;
+}
+.awg-devices-count { font-family: var(--mono); color: var(--text3); }
+.dev-list { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
+.dev-empty { font-size: 12px; color: var(--text3); padding: 4px 0; }
+.dev-row {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--bg3); border-radius: var(--radius-sm);
+  padding: 5px 8px;
+}
+.dev-ip   { font-family: var(--mono); font-size: 12px; color: var(--text); }
+.dev-name { flex: 1; font-size: 12px; color: var(--text2);
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dev-add  { display: flex; gap: 6px; margin-top: 4px; }
+.dev-add .field-input { flex: 1; padding: 5px 8px; font-size: 12px; }
+.dev-error { color: var(--red); font-size: 12px; min-height: 16px; margin-top: 4px; }

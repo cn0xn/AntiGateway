@@ -428,7 +428,7 @@ setup_scripts() {
   # (иначе токен Web UI = root через подмену скрипта).
   for s in update-lists update-routes.sh \
            apply-awg-conf apply-dns-records apply-dns-hosts \
-           render-nftables antigateway-reset; do
+           apply-tunnel-devices render-nftables antigateway-reset; do
     install -m 0755 -o root -g root "$INSTALL_DIR/scripts/$s" /usr/local/bin/
   done
   chmod 0755 /usr/local/bin/check-tunnel.sh

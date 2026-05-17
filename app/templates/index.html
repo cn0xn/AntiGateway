@@ -66,6 +66,22 @@
             <button class="btn btn-danger btn-sm"  onclick="serviceAction('awg','stop')">Stop</button>
             <button class="btn btn-ghost btn-sm"   onclick="serviceAction('awg','restart')">Restart</button>
           </div>
+
+          <div class="awg-devices">
+            <div class="awg-devices-head">
+              <span>Весь трафик через VPN</span>
+              <span class="awg-devices-count" id="devCount">—</span>
+            </div>
+            <div id="devList" class="dev-list"><div class="dev-empty">Загрузка…</div></div>
+            <div class="dev-add">
+              <input class="field-input" id="dev-ip" type="text"
+                     placeholder="IP (напр. 192.168.1.238)" spellcheck="false" autocomplete="off">
+              <input class="field-input" id="dev-name" type="text"
+                     placeholder="Имя (напр. Samsung TV)" spellcheck="false" autocomplete="off">
+              <button class="btn btn-primary btn-sm" onclick="deviceAdd()">+ Добавить</button>
+            </div>
+            <div id="devError" class="dev-error"></div>
+          </div>
         </div>
 
         <div class="card" id="card-dnsmasq">

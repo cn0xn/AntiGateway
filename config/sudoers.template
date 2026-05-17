@@ -46,4 +46,5 @@ __USER__ ALL=(ALL) NOPASSWD: /usr/local/bin/update-lists --apply
 __USER__ ALL=(ALL) NOPASSWD: /usr/local/bin/apply-awg-conf
 __USER__ ALL=(ALL) NOPASSWD: /usr/local/bin/apply-dns-records
 __USER__ ALL=(ALL) NOPASSWD: /usr/local/bin/apply-dns-hosts
+__USER__ ALL=(ALL) NOPASSWD: /usr/local/bin/apply-tunnel-devices
 __USER__ ALL=(ALL) NOPASSWD: /usr/local/bin/antigateway-reset

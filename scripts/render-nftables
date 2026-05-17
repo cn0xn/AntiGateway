@@ -22,9 +22,36 @@ import os
 import sys
 import tempfile
 
-NETWORK_CONF = "/etc/antigateway/network.conf"
-DST_DIR      = "/etc/nftables.d"
-MAIN_CONF    = "/etc/nftables.conf"
+NETWORK_CONF  = "/etc/antigateway/network.conf"
+TUNNEL_DEVICES = "/etc/antigateway/tunnel-devices.json"
+DST_DIR       = "/etc/nftables.d"
+MAIN_CONF     = "/etc/nftables.conf"
+IPV4_RE       = None  # ленивая компиляция (re импортируем ниже)
+
+def device_tunnel_elements():
+    """
+    Строка для плейсхолдера __DEVICE_TUNNEL_ELEMENTS__ в 00_gateway_base.nft.
+    Инлайнит IP устройств из tunnel-devices.json, чтобы set device_tunnel
+    переживал restart nftables. Пусто если устройств нет / файла нет.
+    """
+    import re
+    ipv4 = re.compile(r'^\d{1,3}(\.\d{1,3}){3}(/\d{1,2})?$')
+    try:
+        with open(TUNNEL_DEVICES) as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return ""
+    if not isinstance(data, list):
+        return ""
+    ips = []
+    for rec in data:
+        if isinstance(rec, dict):
+            ip = str(rec.get("ip", "")).strip()
+            if ipv4.match(ip):
+                ips.append(ip)
+    if not ips:
+        return ""
+    return "        elements = { " + ", ".join(ips) + " }"
 
 def atomic_write(path, content, mode=0o644):
     fd, tmp = tempfile.mkstemp(prefix="." + os.path.basename(path) + ".",
@@ -61,10 +88,14 @@ def main():
     if not files:
         print(f"no .nft files in {args.src}", file=sys.stderr); sys.exit(1)
 
+    dev_elems = device_tunnel_elements()
     for name in files:
         with open(os.path.join(args.src, name)) as f:
             content = f.read()
-        content = content.replace("__IFACE__", iface).replace("__PI_IP__", pi_ip)
+        content = (content
+                   .replace("__IFACE__", iface)
+                   .replace("__PI_IP__", pi_ip)
+                   .replace("__DEVICE_TUNNEL_ELEMENTS__", dev_elems))
         atomic_write(os.path.join(DST_DIR, name), content)
 
     # Главный nftables.conf — явные include в нужном порядке.
